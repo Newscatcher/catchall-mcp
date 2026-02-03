@@ -53,7 +53,7 @@ mcp = FastMCP(
     "Newscatcher CatchAll API",
     instructions="""This server allows you to search for news articles using natural language queries via the Newscatcher CatchAll API.
 
-IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://www.newscatcherapi.com/
+IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://platform.newscatcherapi.com/
 
 Workflow:
 1. Use submit_query to submit your news search query
