@@ -5,7 +5,7 @@ This server provides tools to interact with the Newscatcher CatchAll API.
 Users can provide their API key via (in order of precedence):
 1. URL query parameter: ?apiKey=YOUR_KEY (recommended for Claude Web)
 2. The api_key parameter in each tool call
-3. The NEWSCATCHER_API_KEY environment variable
+3. The CATCHALL_API_KEY environment variable
 """
 
 import contextvars
@@ -53,7 +53,7 @@ mcp = FastMCP(
     "Newscatcher CatchAll API",
     instructions="""This server allows you to search for news articles using natural language queries via the Newscatcher CatchAll API.
 
-IMPORTANT: You need a Newscatcher API key to use these tools. Get one at https://www.newscatcherapi.com/
+IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://www.newscatcherapi.com/
 
 Workflow:
 1. Use submit_query to submit your news search query
@@ -71,7 +71,7 @@ def get_api_key(api_key: str = "") -> str:
     Priority order:
     1. api_key parameter (explicit in tool call)
     2. session_api_key (from URL query param ?apiKey=XXX)
-    3. NEWSCATCHER_API_KEY environment variable
+    3. CATCHALL_API_KEY environment variable
     """
     # Check explicit parameter first
     if api_key:
@@ -83,7 +83,7 @@ def get_api_key(api_key: str = "") -> str:
         return url_key
 
     # Fall back to environment variable
-    env_key = os.environ.get("NEWSCATCHER_API_KEY", "")
+    env_key = os.environ.get("CATCHALL_API_KEY", "")
     if env_key:
         return env_key
 
@@ -91,7 +91,7 @@ def get_api_key(api_key: str = "") -> str:
         "API key is required. Provide it via: "
         "1) URL parameter ?apiKey=YOUR_KEY, "
         "2) api_key tool parameter, or "
-        "3) NEWSCATCHER_API_KEY environment variable."
+        "3) CATCHALL_API_KEY environment variable."
     )
 
 
@@ -102,7 +102,7 @@ async def make_api_request(
     json_data: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Make an API request to Newscatcher CatchAll API."""
+    """Make an API request to CatchAll API."""
     key = get_api_key(api_key)
 
     headers = {
@@ -152,7 +152,7 @@ async def submit_query(query: str, api_key: str = "") -> str:
 
     Args:
         query: Natural language query to search for news (e.g., 'Find all M&A deals in tech sector last 7 days')
-        api_key: Your Newscatcher API key. Optional if NEWSCATCHER_API_KEY env var is set.
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
         JSON with job_id to use for checking status and getting results
@@ -181,7 +181,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your Newscatcher API key. Optional if NEWSCATCHER_API_KEY env var is set.
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
         JSON with current job status and progress information
@@ -209,7 +209,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your Newscatcher API key. Optional if NEWSCATCHER_API_KEY env var is set.
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         page: Page number for pagination (default: 1)
         page_size: Number of results per page (default: 100, max: 100)
 
@@ -238,7 +238,7 @@ async def list_user_jobs(api_key: str = "") -> str:
     Returns your job history with IDs, queries, statuses, and timestamps.
 
     Args:
-        api_key: Your Newscatcher API key. Optional if NEWSCATCHER_API_KEY env var is set.
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
         JSON with list of your submitted jobs
@@ -265,7 +265,7 @@ async def continue_job(job_id: str, api_key: str = "") -> str:
 
     Args:
         job_id: The job ID to continue processing
-        api_key: Your Newscatcher API key. Optional if NEWSCATCHER_API_KEY env var is set.
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
         JSON confirming the job continuation
