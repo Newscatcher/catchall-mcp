@@ -55,10 +55,18 @@ mcp = FastMCP(
 
 IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://platform.newscatcherapi.com/
 
-Workflow:
-1. Use submit_query to submit your news search query
-2. Use get_job_status to check if processing is complete
-3. Use pull_results to retrieve the clustered news articles""",
+## Core workflow: Jobs (submit -> poll -> pull)
+1. Use submit_query to submit your news search query (only `query` is required; the system auto-selects validators, enrichments, and dates)
+2. Optionally use initialize_query first to preview suggested validators/enrichments before submitting
+3. Use get_job_status to poll for completion (status: submitted -> analyzing -> fetching -> clustering -> enriching -> completed)
+4. Use pull_results to retrieve the clustered news articles (partial results available before completion)
+5. Use continue_job to expand results beyond the initial limit if needed
+
+## Monitors workflow (explore -> refine -> automate)
+1. Submit and refine a job until results match your needs
+2. Use create_monitor with the completed job's ID to schedule recurring runs
+3. Use list_monitors, pull_monitor_results, list_monitor_jobs to manage and view results
+4. Use enable_monitor / disable_monitor / update_monitor to control monitors""",
 )
 
 # Add middleware to extract API key from URL query parameters
@@ -142,27 +150,107 @@ async def make_api_request(
         return response.json()
 
 
+# ---------------------------------------------------------------------------
+# Job tools
+# ---------------------------------------------------------------------------
+
+
 @mcp.tool()
-async def submit_query(query: str, api_key: str = "") -> str:
+async def submit_query(
+    query: str,
+    api_key: str = "",
+    context: str = "",
+    limit: int = 0,
+    start_date: str = "",
+    end_date: str = "",
+    validators: list[dict[str, str]] | None = None,
+    enrichments: list[dict[str, str]] | None = None,
+    schema: str = "",
+) -> str:
     """
     Submit a natural language query to search for news articles.
 
     The system will fetch, validate, cluster, and summarize relevant articles.
     Returns a job_id that you'll use to check status and retrieve results.
 
+    Only `query` is required. When submitted with just a query, the system
+    automatically selects appropriate validators, enrichments, and date ranges.
+
     Args:
         query: Natural language query to search for news (e.g., 'Find all M&A deals in tech sector last 7 days')
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        context: Additional context to refine the query (e.g., 'Focus on deals over $1B')
+        limit: Maximum number of results. 0 means no limit (exhaustive). Use ~50 for exploratory queries, ~10 for narrow queries.
+        start_date: Start of date range in ISO 8601 format (e.g., '2026-01-30T00:00:00Z'). Limits which articles are searched.
+        end_date: End of date range in ISO 8601 format. Limits which articles are searched.
+        validators: List of boolean validators to filter articles. Each is a dict with 'name', 'description', and 'type' (always 'boolean'). Example: [{"name": "is_merger", "description": "Article is about a merger or acquisition", "type": "boolean"}]
+        enrichments: List of enrichments to extract from articles. Each is a dict with 'name', 'description', and 'type' (one of: text, number, date, option, url, company). Example: [{"name": "deal_value", "description": "Estimated deal value in USD", "type": "number"}]
+        schema: Output schema specification.
 
     Returns:
         JSON with job_id to use for checking status and getting results
     """
     try:
+        body: dict[str, Any] = {"query": query}
+        if context:
+            body["context"] = context
+        if limit > 0:
+            body["limit"] = limit
+        if start_date:
+            body["start_date"] = start_date
+        if end_date:
+            body["end_date"] = end_date
+        if validators:
+            body["validators"] = validators
+        if enrichments:
+            body["enrichments"] = enrichments
+        if schema:
+            body["schema"] = schema
+
         result = await make_api_request(
             api_key=api_key,
             method="POST",
             path="/catchAll/submit",
-            json_data={"query": query},
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def initialize_query(
+    query: str,
+    api_key: str = "",
+    context: str = "",
+) -> str:
+    """
+    Preview suggested validators and enrichments before submitting a job.
+
+    Use this to see what the system would auto-select for your query.
+    You can then adjust the suggestions and pass them to submit_query.
+    Skip this if you trust the defaults and go straight to submit_query.
+
+    Args:
+        query: Natural language query to preview (e.g., 'AI chip export restrictions')
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        context: Additional context to refine suggestions.
+
+    Returns:
+        JSON with suggested validators, enrichments, start_date, end_date, and date_modification_message
+    """
+    try:
+        body: dict[str, Any] = {"query": query}
+        if context:
+            body["context"] = context
+
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/initialize",
+            json_data=body,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -179,12 +267,16 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
     Call this after submit_query to see if your job is ready.
     Status progression: submitted -> analyzing -> fetching -> clustering -> enriching -> completed
 
+    You don't need to wait for completion to pull results. Partial results are
+    available early — call pull_results after ~1-2 minutes, then poll status
+    every ~60 seconds and pull again for fresher results.
+
     Args:
         job_id: The job ID returned from submit_query
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
-        JSON with current job status and progress information
+        JSON with current job status, steps, and progress information
     """
     try:
         result = await make_api_request(
@@ -202,10 +294,10 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 @mcp.tool()
 async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size: int = 100) -> str:
     """
-    Retrieve the results of a completed job.
+    Retrieve the results of a job.
 
-    Only call this after get_job_status shows the job is complete.
-    Returns clustered and summarized news articles.
+    Can be called before completion for partial results, or after completion
+    for the full set. Returns clustered, validated, and enriched news articles.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -231,23 +323,27 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
 
 @mcp.tool()
-async def list_user_jobs(api_key: str = "") -> str:
+async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
     """
-    List all jobs submitted by you.
+    Expand a job's results beyond the initial limit.
 
-    Returns your job history with IDs, queries, statuses, and timestamps.
+    Use this when you need more articles than the original limit allowed.
+    The new_limit must be greater than the previous limit.
 
     Args:
+        job_id: The job ID to continue processing
+        new_limit: New result limit (must exceed the previous limit)
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
-        JSON with list of your submitted jobs
+        JSON with job_id, previous_limit, new_limit, and status
     """
     try:
         result = await make_api_request(
             api_key=api_key,
-            method="GET",
-            path="/catchAll/jobs/user",
+            method="POST",
+            path="/catchAll/continue",
+            json_data={"job_id": job_id, "new_limit": new_limit},
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -257,25 +353,278 @@ async def list_user_jobs(api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def continue_job(job_id: str, api_key: str = "") -> str:
+async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
     """
-    Continue processing a job that needs more data.
+    List all jobs submitted by you.
 
-    Use this when a job requires additional article fetching.
+    Returns your job history with IDs, queries, statuses, and timestamps.
 
     Args:
-        job_id: The job ID to continue processing
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        page: Page number for pagination (default: 1)
+        page_size: Number of results per page (default: 100)
+
+    Returns:
+        JSON with list of your submitted jobs
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/jobs/user",
+            params={"page": page, "page_size": page_size},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Monitor tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def create_monitor(
+    reference_job_id: str,
+    schedule: str,
+    api_key: str = "",
+    webhook_url: str = "",
+    webhook_method: str = "POST",
+    webhook_headers: dict[str, str] | None = None,
+    webhook_params: dict[str, str] | None = None,
+    webhook_auth: list[str] | None = None,
+) -> str:
+    """
+    Create a recurring monitor from a completed job.
+
+    Monitors re-run a job's query on a schedule. Use the explore -> refine -> automate
+    pattern: submit a job, refine until results match, then create a monitor.
+
+    The schedule is defined in natural language (e.g., 'every day at 9 AM EST').
+    Always include a timezone.
+
+    Args:
+        reference_job_id: ID of a completed job to use as the template
+        schedule: Natural language schedule (e.g., 'every day at 9 AM EST', 'every Monday at 8 AM UTC', 'every 6 hours')
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        webhook_url: Optional webhook URL to receive results on each run
+        webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
+        webhook_headers: Optional dict of custom HTTP headers for the webhook
+        webhook_params: Optional dict of query string parameters for the webhook
+        webhook_auth: Optional basic auth as [username, password]
+
+    Returns:
+        JSON with monitor_id and status
+    """
+    try:
+        body: dict[str, Any] = {
+            "reference_job_id": reference_job_id,
+            "schedule": schedule,
+        }
+
+        if webhook_url:
+            webhook: dict[str, Any] = {"url": webhook_url, "method": webhook_method}
+            if webhook_headers:
+                webhook["headers"] = webhook_headers
+            if webhook_params:
+                webhook["params"] = webhook_params
+            if webhook_auth:
+                webhook["auth"] = webhook_auth
+            body["webhook"] = webhook
+
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/monitors/create",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_monitors(api_key: str = "") -> str:
+    """
+    List all your monitors.
+
+    Returns all monitors with their schedule, status, reference query, and webhook config.
+
+    Args:
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
-        JSON confirming the job continuation
+        JSON with total_monitors and list of monitors
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/monitors/",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def pull_monitor_results(monitor_id: str, api_key: str = "") -> str:
+    """
+    Retrieve the latest results from a monitor.
+
+    Returns the most recent run's results including run_info, records, and all_records.
+
+    Args:
+        monitor_id: The monitor ID to pull results from
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+
+    Returns:
+        JSON with monitor_id, cron_expression, reference_job, run_info, records, and all_records
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/monitors/pull/{monitor_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_monitor_jobs(monitor_id: str, api_key: str = "", sort: str = "asc") -> str:
+    """
+    List all jobs spawned by a monitor.
+
+    Returns the history of scheduled runs for a monitor.
+
+    Args:
+        monitor_id: The monitor ID to list jobs for
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        sort: Sort order by start_date: 'asc' (default) or 'desc'
+
+    Returns:
+        JSON with list of jobs including job_id, start_date, end_date
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/monitors/{monitor_id}/jobs",
+            params={"sort": sort},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def disable_monitor(monitor_id: str, api_key: str = "") -> str:
+    """
+    Disable a monitor to stop its scheduled runs.
+
+    The monitor can be re-enabled later with enable_monitor.
+
+    Args:
+        monitor_id: The monitor ID to disable
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+
+    Returns:
+        Confirmation that the monitor was disabled
     """
     try:
         result = await make_api_request(
             api_key=api_key,
             method="POST",
-            path="/catchAll/continue",
-            json_data={"job_id": job_id},
+            path=f"/catchAll/monitors/{monitor_id}/disable",
+        )
+        return json.dumps(result, indent=2) if result else "Monitor disabled successfully."
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def enable_monitor(monitor_id: str, api_key: str = "") -> str:
+    """
+    Enable a previously disabled monitor to resume its scheduled runs.
+
+    Args:
+        monitor_id: The monitor ID to enable
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+
+    Returns:
+        Confirmation that the monitor was enabled
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/monitors/{monitor_id}/enable",
+        )
+        return json.dumps(result, indent=2) if result else "Monitor enabled successfully."
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_monitor(
+    monitor_id: str,
+    api_key: str = "",
+    webhook_url: str = "",
+    webhook_method: str = "POST",
+    webhook_headers: dict[str, str] | None = None,
+    webhook_params: dict[str, str] | None = None,
+    webhook_auth: list[str] | None = None,
+) -> str:
+    """
+    Update a monitor's webhook configuration.
+
+    Args:
+        monitor_id: The monitor ID to update
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        webhook_url: New webhook URL
+        webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
+        webhook_headers: Optional dict of custom HTTP headers for the webhook
+        webhook_params: Optional dict of query string parameters for the webhook
+        webhook_auth: Optional basic auth as [username, password]
+
+    Returns:
+        JSON with monitor_id and status
+    """
+    try:
+        body: dict[str, Any] = {}
+
+        if webhook_url:
+            webhook: dict[str, Any] = {"url": webhook_url, "method": webhook_method}
+            if webhook_headers:
+                webhook["headers"] = webhook_headers
+            if webhook_params:
+                webhook["params"] = webhook_params
+            if webhook_auth:
+                webhook["auth"] = webhook_auth
+            body["webhook"] = webhook
+
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/monitors/{monitor_id}",
+            json_data=body,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
