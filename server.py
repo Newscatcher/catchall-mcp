@@ -51,15 +51,16 @@ class ApiKeyMiddleware(Middleware):
 # Create the FastMCP server
 mcp = FastMCP(
     "Newscatcher CatchAll API",
-    instructions="""This server allows you to search for news articles using natural language queries via the Newscatcher CatchAll API.
+    instructions="""This server allows you to search the web using natural language queries via the Newscatcher CatchAll API.
 
 IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://platform.newscatcherapi.com/
 
 ## Core workflow: Jobs (submit -> poll -> pull)
-1. Use submit_query to submit your news search query (only `query` is required; the system auto-selects validators, enrichments, and dates)
+1. Use submit_query to submit your web search query (only `query` is required; the system auto-selects validators, enrichments, and dates)
 2. Optionally use initialize_query first to preview suggested validators/enrichments before submitting
 3. Use get_job_status to poll for completion (status: submitted -> analyzing -> fetching -> clustering -> enriching -> completed)
-4. Use pull_results to retrieve the clustered news articles (partial results available before completion)
+   IMPORTANT: Jobs take several minutes to process. Wait at least 30 seconds between status checks. Do NOT poll more frequently.
+4. Use pull_results to retrieve the clustered web results (partial results available before completion)
 5. Use continue_job to expand results beyond the initial limit if needed
 
 ## Monitors workflow (explore -> refine -> automate)
@@ -168,23 +169,23 @@ async def submit_query(
     schema: str = "",
 ) -> str:
     """
-    Submit a natural language query to search for news articles.
+    Submit a natural language query to search the web.
 
-    The system will fetch, validate, cluster, and summarize relevant articles.
+    The system will fetch, validate, cluster, and summarize relevant results.
     Returns a job_id that you'll use to check status and retrieve results.
 
     Only `query` is required. When submitted with just a query, the system
     automatically selects appropriate validators, enrichments, and date ranges.
 
     Args:
-        query: Natural language query to search for news (e.g., 'Find all M&A deals in tech sector last 7 days')
+        query: Natural language query to search the web (e.g., 'Find all M&A deals in tech sector last 7 days')
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         context: Additional context to refine the query (e.g., 'Focus on deals over $1B')
         limit: Maximum number of results. 0 means no limit (exhaustive). Use ~50 for exploratory queries, ~10 for narrow queries.
         start_date: Start of date range in ISO 8601 format (e.g., '2026-01-30T00:00:00Z'). Limits which articles are searched.
         end_date: End of date range in ISO 8601 format. Limits which articles are searched.
-        validators: List of boolean validators to filter articles. Each is a dict with 'name', 'description', and 'type' (always 'boolean'). Example: [{"name": "is_merger", "description": "Article is about a merger or acquisition", "type": "boolean"}]
-        enrichments: List of enrichments to extract from articles. Each is a dict with 'name', 'description', and 'type' (one of: text, number, date, option, url, company). Example: [{"name": "deal_value", "description": "Estimated deal value in USD", "type": "number"}]
+        validators: List of boolean validators to filter results. Each is a dict with 'name', 'description', and 'type' (always 'boolean'). Example: [{"name": "is_merger", "description": "Article is about a merger or acquisition", "type": "boolean"}]
+        enrichments: List of enrichments to extract from results. Each is a dict with 'name', 'description', and 'type' (one of: text, number, date, option, url, company). Example: [{"name": "deal_value", "description": "Estimated deal value in USD", "type": "number"}]
         schema: Output schema specification.
 
     Returns:
@@ -267,9 +268,12 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
     Call this after submit_query to see if your job is ready.
     Status progression: submitted -> analyzing -> fetching -> clustering -> enriching -> completed
 
+    IMPORTANT: Jobs take several minutes to process. Wait at least 30 seconds
+    between status checks. Do NOT call this tool in a tight loop.
+
     You don't need to wait for completion to pull results. Partial results are
-    available early — call pull_results after ~1-2 minutes, then poll status
-    every ~60 seconds and pull again for fresher results.
+    available early — call pull_results after ~2 minutes, then poll status
+    every 30-60 seconds and pull again for fresher results.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -297,7 +301,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
     Retrieve the results of a job.
 
     Can be called before completion for partial results, or after completion
-    for the full set. Returns clustered, validated, and enriched news articles.
+    for the full set. Returns clustered, validated, and enriched web results.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -306,7 +310,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         page_size: Number of results per page (default: 100, max: 100)
 
     Returns:
-        JSON with clustered news articles, summaries, and metadata
+        JSON with clustered web results, summaries, and metadata
     """
     try:
         result = await make_api_request(
@@ -327,7 +331,7 @@ async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
     """
     Expand a job's results beyond the initial limit.
 
-    Use this when you need more articles than the original limit allowed.
+    Use this when you need more results than the original limit allowed.
     The new_limit must be greater than the previous limit.
 
     Args:
