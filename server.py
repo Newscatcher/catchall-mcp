@@ -344,7 +344,7 @@ async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
 
     Args:
         job_id: The job ID to continue processing
-        new_limit: New record processing limit (must exceed the previous limit). This controls cost — users pay per record.
+        new_limit: New record processing limit (must exceed the previous limit).
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
