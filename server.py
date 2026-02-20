@@ -63,6 +63,12 @@ IMPORTANT: You need a CatchAll API key to use these tools. Get one at https://pl
 4. Use pull_results to retrieve the clustered web results (partial results available before completion)
 5. Use continue_job to expand results beyond the initial limit if needed
 
+## Understanding `limit` vs `page_size` — IMPORTANT
+These two parameters serve completely different purposes:
+- `limit` (submit_query, continue_job): Controls how many records the system PROCESSES. Users pay per record, so limit controls cost. Start with a low limit (e.g. 10-50) to preview results cheaply, then use continue_job with a higher new_limit if more are needed.
+- `page_size` (pull_results, list_user_jobs): Controls how many records are RETURNED per API call. This is free pagination — it does not affect cost or processing. If a job has 244 total records, use page/page_size to iterate through ALL of them across multiple pull_results calls (e.g. page=1, page=2, page=3 with page_size=100).
+To get all records from a completed job, check total_pages in the pull_results response and iterate through every page. Do NOT use continue_job just to see more records that already exist — use pagination instead.
+
 ## Monitors workflow (explore -> refine -> automate)
 1. Submit and refine a job until results match your needs
 2. Use create_monitor with the completed job's ID to schedule recurring runs
@@ -181,7 +187,7 @@ async def submit_query(
         query: Natural language query to search the web (e.g., 'Find all M&A deals in tech sector last 7 days')
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         context: Additional context to refine the query (e.g., 'Focus on deals over $1B')
-        limit: Maximum number of results. 0 means no limit (exhaustive). Use ~50 for exploratory queries, ~10 for narrow queries.
+        limit: Maximum number of records the system will process (controls cost — users pay per record). 0 means no limit (exhaustive). Start low (e.g. 10-50) to preview results cheaply, then use continue_job to expand if needed. This is NOT pagination — use page_size in pull_results to paginate through processed records for free.
         start_date: Start of date range in ISO 8601 format (e.g., '2026-01-30T00:00:00Z'). Limits which articles are searched.
         end_date: End of date range in ISO 8601 format. Limits which articles are searched.
         validators: List of boolean validators to filter results. Each is a dict with 'name', 'description', and 'type' (always 'boolean'). Example: [{"name": "is_merger", "description": "Article is about a merger or acquisition", "type": "boolean"}]
@@ -303,14 +309,19 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
     Can be called before completion for partial results, or after completion
     for the full set. Returns clustered, validated, and enriched web results.
 
+    Pagination is free and does not cost credits. If the response shows
+    total_pages > 1, iterate through all pages to get every record.
+    For example, a job with 244 records at page_size=100 has 3 pages —
+    call this tool 3 times with page=1, page=2, page=3.
+
     Args:
         job_id: The job ID returned from submit_query
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
-        page: Page number for pagination (default: 1)
-        page_size: Number of results per page (default: 100, max: 100)
+        page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
+        page_size: Number of records returned per page (default: 100, max: 100). This is free pagination, not a billing limit.
 
     Returns:
-        JSON with clustered web results, summaries, and metadata
+        JSON with clustered web results, summaries, metadata, page, page_size, and total_pages
     """
     try:
         result = await make_api_request(
@@ -329,14 +340,18 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 @mcp.tool()
 async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
     """
-    Expand a job's results beyond the initial limit.
+    Expand a job by processing more records beyond the initial limit.
 
-    Use this when you need more results than the original limit allowed.
+    This increases the number of records the system processes (which costs
+    additional credits). Only use this when the user wants MORE data processed,
+    not when paginating through existing results — use pull_results with
+    page/page_size for free pagination instead.
+
     The new_limit must be greater than the previous limit.
 
     Args:
         job_id: The job ID to continue processing
-        new_limit: New result limit (must exceed the previous limit)
+        new_limit: New record processing limit (must exceed the previous limit). This controls cost — users pay per record.
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
