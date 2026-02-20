@@ -187,7 +187,7 @@ async def submit_query(
         query: Natural language query to search the web (e.g., 'Find all M&A deals in tech sector last 7 days')
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         context: Additional context to refine the query (e.g., 'Focus on deals over $1B')
-        limit: Maximum number of records the system will process (controls cost — users pay per record). 0 means no limit (exhaustive). Start low (e.g. 10-50) to preview results cheaply, then use continue_job to expand if needed. This is NOT pagination — use page_size in pull_results to paginate through processed records for free.
+        limit: Maximum number of records the system will process (controls cost — users pay per record). 0 means no limit (exhaustive). Start low (e.g. 10-50) to preview results cheaply, then use continue_job to expand if needed.
         start_date: Start of date range in ISO 8601 format (e.g., '2026-01-30T00:00:00Z'). Limits which articles are searched.
         end_date: End of date range in ISO 8601 format. Limits which articles are searched.
         validators: List of boolean validators to filter results. Each is a dict with 'name', 'description', and 'type' (always 'boolean'). Example: [{"name": "is_merger", "description": "Article is about a merger or acquisition", "type": "boolean"}]
@@ -309,16 +309,11 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
     Can be called before completion for partial results, or after completion
     for the full set. Returns clustered, validated, and enriched web results.
 
-    Pagination is free and does not cost credits. If the response shows
-    total_pages > 1, iterate through all pages to get every record.
-    For example, a job with 244 records at page_size=100 has 3 pages —
-    call this tool 3 times with page=1, page=2, page=3.
-
     Args:
         job_id: The job ID returned from submit_query
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
-        page_size: Number of records returned per page (default: 100, max: 100). This is free pagination, not a billing limit.
+        page_size: Number of records returned per page (default: 100, max: 100).
 
     Returns:
         JSON with clustered web results, summaries, metadata, page, page_size, and total_pages
@@ -343,9 +338,7 @@ async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
     Expand a job by processing more records beyond the initial limit.
 
     This increases the number of records the system processes (which costs
-    additional credits). Only use this when the user wants MORE data processed,
-    not when paginating through existing results — use pull_results with
-    page/page_size for free pagination instead.
+    additional credits). Only use this when the user wants MORE data processed.
 
     The new_limit must be greater than the previous limit.
 
