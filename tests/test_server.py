@@ -195,6 +195,20 @@ class ApiRequestAuthTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ValidationHelperTests(unittest.TestCase):
+    def test_coerce_definition_list(self) -> None:
+        parsed = server.coerce_definition_list(
+            '[{"name":"is_event","description":"true if event"}]',
+            "validators",
+        )
+        self.assertEqual(parsed, [{"name": "is_event", "description": "true if event"}])
+        self.assertIsNone(server.coerce_definition_list("", "validators"))
+        self.assertIsNone(server.coerce_definition_list(None, "validators"))
+
+        with self.assertRaises(ValueError):
+            server.coerce_definition_list("{bad-json", "validators")
+        with self.assertRaises(ValueError):
+            server.coerce_definition_list('{"name":"not-an-array"}', "validators")
+
     def test_validate_page_params(self) -> None:
         server.validate_page_params(1, 1000)
         with self.assertRaises(ValueError):
@@ -527,6 +541,38 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_submit_query_accepts_stringified_definitions(self) -> None:
+        with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"job_id": "job-2"}
+            result = await server.submit_query(
+                query="incidents",
+                validators='[{"name":"is_incident","description":"true if incident"}]',
+                enrichments='[{"name":"incident_type","description":"type of incident","type":"option"}]',
+            )
+
+        self.assertEqual(result, json.dumps({"job_id": "job-2"}, indent=2))
+        called = mock_api.await_args.kwargs
+        self.assertEqual(
+            called["json_data"]["validators"],
+            [
+                {
+                    "name": "is_incident",
+                    "description": "true if incident",
+                    "type": "boolean",
+                }
+            ],
+        )
+        self.assertEqual(
+            called["json_data"]["enrichments"],
+            [
+                {
+                    "name": "incident_type",
+                    "description": "type of incident",
+                    "type": "option",
+                }
+            ],
+        )
+
     async def test_tool_validations_fail_early(self) -> None:
         invalid_calls = [
             (server.pull_results, {"job_id": "job-1", "page": 0}, "page must be >= 1."),
@@ -586,9 +632,25 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 server.submit_query,
                 {
                     "query": "acquisitions",
+                    "validators": "{bad-json",
+                },
+                "validators must be valid JSON array when provided as string.",
+            ),
+            (
+                server.submit_query,
+                {
+                    "query": "acquisitions",
                     "enrichments": [{"name": "deal_value", "description": "Extract value", "type": "boolean"}],
                 },
                 "enrichments[0].type must be one of: company, date, dict, number, option, text, url.",
+            ),
+            (
+                server.submit_query,
+                {
+                    "query": "acquisitions",
+                    "enrichments": '{"name":"not-array"}',
+                },
+                "enrichments must be a JSON array when provided.",
             ),
             (
                 server.update_monitor,

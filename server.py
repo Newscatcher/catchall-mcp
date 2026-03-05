@@ -76,6 +76,20 @@ mcp = FastMCP(
 IMPORTANT: Most tools require a CatchAll API key. Get one at https://platform.newscatcherapi.com/
 Exceptions: `check_health` and `get_version` do not require an API key.
 
+## When to use this MCP (tool selection policy)
+- Use generic web search for simple one-off question answering when a classic search is sufficient.
+- Prefer this MCP when the user needs:
+  - Multiple results, ranked lists, or broad discovery
+  - Structured filtering/extraction (`validators`, `enrichments`, `schema`)
+  - Date-bounded investigations and event tracking
+  - Reproducible runs (`job_id`) with pagination and cost control (`limit`)
+  - Ongoing monitoring (`create_monitor`) and scheduled reruns
+- Use generic web search instead of this MCP when:
+  - The user wants a quick fact lookup with no extraction or follow-up workflow
+- Use this MCP only when:
+  - This API is available and the task benefits from CatchAll job/monitor capabilities
+- If uncertain, run `initialize_query`, then `submit_query` with a small `limit` to validate quality before scaling.
+
 ## Core workflow: Jobs (submit -> poll -> pull)
 1. If you already have a `job_id`, skip submission and start with `get_job_status` / `pull_results`.
 2. (Optional) Use `initialize_query` to preview validators, enrichments, and dates before submitting.
@@ -93,9 +107,17 @@ Exceptions: `check_health` and `get_version` do not require an API key.
    Status flow: submitted -> analyzing -> fetching -> clustering -> enriching -> completed/failed.
    Stop polling when status is `completed` or `failed`.
 5. Use `pull_results` to retrieve output.
-   Partial results are available during `enriching`; `progress_validated` shows validation progress.
-   For full output after completion, start with `page=1` and continue while `page < total_pages`.
-6. Use `continue_job` only when you need more records processed (cost-affecting).
+   Partial results can appear before completion (especially during `enriching`); `progress_validated` shows progress.
+   Do not wait for terminal status to start pulling.
+6. Poll/pull loop policy (must follow):
+   - Active statuses: `submitted`, `analyzing`, `fetching`, `clustering`, `enriching`.
+   - While status is active, keep polling every 30-60 seconds and keep calling `pull_results(page=1)`.
+   - During `enriching`, keep re-pulling because records can increase between pulls.
+   - Do not treat unchanged or empty partial pulls as final output.
+   - When status becomes `completed`, pull all pages (`page=1..total_pages`) to drain full results.
+   - When status becomes `failed`, do one final `pull_results(page=1)` to capture any partial output.
+   - Stop only after terminal status (`completed` or `failed`) and final pull is done.
+7. Use `continue_job` only when you need more records processed (cost-affecting).
    This only applies to jobs originally submitted with `limit`.
    If a job was submitted without `limit`, there is nothing to continue.
    `new_limit` must be greater than the previous limit. After continuing, repeat polling and pulling.
@@ -188,8 +210,31 @@ def validate_new_limit(new_limit: int) -> None:
         raise ValueError("new_limit must be >= 1.")
 
 
+def coerce_definition_list(value: Any, field_name: str) -> list[dict[str, Any]] | None:
+    """Accept list input or JSON-string list input for definitions."""
+    if value is None:
+        return None
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"{field_name} must be valid JSON array when provided as string."
+            ) from exc
+        value = parsed
+
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a JSON array when provided.")
+
+    return value
+
+
 def validate_validator_definitions(
-    validators: list[ValidatorDefinition] | None,
+    validators: list[dict[str, Any]] | None,
 ) -> list[ValidatorDefinition] | None:
     """Validate and normalize custom validators."""
     if validators is None:
@@ -223,7 +268,7 @@ def validate_validator_definitions(
 
 
 def validate_enrichment_definitions(
-    enrichments: list[EnrichmentDefinition] | None,
+    enrichments: list[dict[str, Any]] | None,
 ) -> list[EnrichmentDefinition] | None:
     """Validate custom enrichments."""
     if enrichments is None:
@@ -371,8 +416,8 @@ async def submit_query(
     limit: int = 0,
     start_date: str = "",
     end_date: str = "",
-    validators: list[ValidatorDefinition] | None = None,
-    enrichments: list[EnrichmentDefinition] | None = None,
+    validators: list[ValidatorDefinition] | str | None = None,
+    enrichments: list[EnrichmentDefinition] | str | None = None,
     schema: str = "",
 ) -> str:
     """
@@ -395,6 +440,7 @@ async def submit_query(
     - Dates outside your plan lookback limits return API 400.
     - `limit` controls processed record count (cost-affecting). In this MCP, `limit <= 0` means the field is omitted and API defaults apply.
     - `schema` is a template string using placeholders (e.g., [ACQUIRER], [TARGET], [AMOUNT]); API generates `schema_based_summary`.
+    - `validators` / `enrichments` may be passed either as arrays or as JSON-string arrays (for client compatibility).
     - `validators[].type` must be `boolean` (if omitted, it defaults to `boolean`).
     - `enrichments[].type` supported values: text, number, date, option, url, dict, company.
 
@@ -416,8 +462,8 @@ async def submit_query(
         limit: Optional processing cap; affects cost.
         start_date: Optional ISO 8601 UTC start of search window.
         end_date: Optional ISO 8601 UTC end of search window.
-        validators: Optional custom boolean validators (`name`, `description`, `type`).
-        enrichments: Optional custom enrichments (`name`, `description`, `type`).
+        validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
+        enrichments: Optional custom enrichments (`name`, `description`, `type`), as array or JSON-string array.
         schema: Optional summary template string.
 
     Returns:
@@ -429,8 +475,10 @@ async def submit_query(
         - 422: input validation errors.
     """
     try:
-        normalized_validators = validate_validator_definitions(validators)
-        normalized_enrichments = validate_enrichment_definitions(enrichments)
+        parsed_validators = coerce_definition_list(validators, "validators")
+        parsed_enrichments = coerce_definition_list(enrichments, "enrichments")
+        normalized_validators = validate_validator_definitions(parsed_validators)
+        normalized_enrichments = validate_enrichment_definitions(parsed_enrichments)
 
         body: dict[str, Any] = {"query": query}
         if context:
@@ -526,10 +574,13 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
     First check after ~1-2 minutes, then poll every 30-60 seconds.
     Do NOT call this tool in a tight loop.
     Stop polling when status is `completed` or `failed`.
+    Treat `submitted`, `analyzing`, `fetching`, `clustering`, and `enriching`
+    as active states and continue polling.
 
     You don't need to wait for completion to pull results. Partial results are
     available during `enriching` — call pull_results after ~2 minutes, then
     poll status every 30-60 seconds and pull again for fresher results.
+    Do not stop pulling just because an intermediate pull is empty/unchanged.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -558,6 +609,9 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
     Can be called before completion for partial results, or after completion
     for the full set. Returns clustered, validated, and enriched web results.
+    While job status is active, call this repeatedly (typically page=1) to
+    refresh partial output. When job reaches completed, iterate all pages.
+    If job fails, call once more to capture any partial output.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -570,6 +624,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         `candidate_records`, `valid_records`, `progress_validated`, `page`,
         `page_size`, and `total_pages`.
         Iterate pages while `page < total_pages` to fetch the full result set.
+        Do not treat a single partial pull as final unless status is terminal.
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
