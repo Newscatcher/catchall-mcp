@@ -104,6 +104,7 @@ Exceptions: `check_health` and `get_version` do not require an API key.
    Use `limit` to control processed records and cost.
 4. Use `get_job_status` to poll job progress.
    IMPORTANT: First check after ~1-2 minutes, then poll every 30-60 seconds.
+   Broad queries can take 10-30+ minutes; for long-running jobs, use a slower poll cadence (60-120 seconds).
    Status flow: submitted -> analyzing -> fetching -> clustering -> enriching -> completed/failed.
    Stop polling when status is `completed` or `failed`.
 5. Use `pull_results` to retrieve output.
@@ -115,9 +116,22 @@ Exceptions: `check_health` and `get_version` do not require an API key.
    - During `enriching`, keep re-pulling because records can increase between pulls.
    - Do not treat unchanged or empty partial pulls as final output.
    - When status becomes `completed`, pull all pages (`page=1..total_pages`) to drain full results.
+   - After completed page drain, verify collected record count matches `valid_records`.
+   - If counts do not match, wait briefly and re-run a full page drain once (eventual consistency guard).
    - When status becomes `failed`, do one final `pull_results(page=1)` to capture any partial output.
    - Stop only after terminal status (`completed` or `failed`) and final pull is done.
-7. Use `continue_job` only when you need more records processed (cost-affecting).
+   - If transport/session fails mid-run, resume with the same `job_id` (do not resubmit unless user asks).
+7. Result presentation policy (must follow):
+   - When showing only the first batch (often 10 records), always also report:
+     `candidate_records`, `progress_validated`, `valid_records`, `page`, `page_size`, and `total_pages`.
+   - Always compare shown count to totals.
+   - `page`, `page_size`, and `total_pages` describe pagination for already processed currently available records.
+   - If `valid_records` is greater than shown count or `total_pages > 1`, explicitly tell the user there are more already-available results ready to pull via pagination.
+   - If `progress_validated < candidate_records`, explicitly tell the user additional results may still appear as processing continues.
+   - Distinguish:
+     - More already available now (pagination over completed/partial output)
+     - More potentially coming later (`progress_validated < candidate_records`)
+8. Use `continue_job` only when you need more records processed (cost-affecting).
    This only applies to jobs originally submitted with `limit`.
    If a job was submitted without `limit`, there is nothing to continue.
    `new_limit` must be greater than the previous limit. After continuing, repeat polling and pulling.
@@ -125,7 +139,9 @@ Exceptions: `check_health` and `get_version` do not require an API key.
 ## Understanding `limit` vs `page_size` — IMPORTANT
 These two parameters serve completely different purposes:
 - `limit` (submit_query, continue_job): Controls how many records the system PROCESSES. Users pay per record, so limit controls cost. Start with a low limit (e.g. 10-50) to preview results cheaply, then use continue_job with a higher new_limit if more are needed.
-- `page_size` (pull_results, list_user_jobs): Controls how many records are RETURNED per API call (max 1000). This is free pagination — it does not affect cost or processing. If a job has 244 total records, use page/page_size to iterate through ALL of them across multiple pull_results calls (e.g. page=1, page=2, page=3 with page_size=100).
+- `page_size` (pull_results default 50; list_user_jobs default 100): Controls how many records are RETURNED per API call (max 1000). This is free pagination — it does not affect cost or processing. If a job has 244 total records, use page/page_size to iterate through ALL of them across multiple pull_results calls (e.g. page=1, page=2, page=3 with page_size=50).
+- `page`, `page_size`, and `total_pages` are about records already available to pull; they do not indicate how many new records may still be produced.
+- Use `candidate_records` and `progress_validated` to track remaining processing (`progress_validated < candidate_records` means more results may still appear).
 To get all records from a completed job, check total_pages in the pull_results response and iterate through every page. Do NOT use continue_job just to see more records that already exist — use pagination instead.
 
 ## Monitors workflow (explore -> refine -> automate)
@@ -572,6 +588,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
     IMPORTANT: Jobs take several minutes to process.
     First check after ~1-2 minutes, then poll every 30-60 seconds.
+    Broad searches can take 10-30+ minutes; for long jobs, poll every 60-120 seconds.
     Do NOT call this tool in a tight loop.
     Stop polling when status is `completed` or `failed`.
     Treat `submitted`, `analyzing`, `fetching`, `clustering`, and `enriching`
@@ -581,6 +598,9 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
     available during `enriching` — call pull_results after ~2 minutes, then
     poll status every 30-60 seconds and pull again for fresher results.
     Do not stop pulling just because an intermediate pull is empty/unchanged.
+    Use `progress_validated` vs `candidate_records` to track whether more
+    results may still appear (`progress_validated < candidate_records`).
+    If transport/session fails, resume using the same `job_id`.
 
     Args:
         job_id: The job ID returned from submit_query
@@ -603,7 +623,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size: int = 50) -> str:
     """
     Retrieve the results of a job.
 
@@ -617,14 +637,24 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         job_id: The job ID returned from submit_query
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
-        page_size: Number of records returned per page (default: 100, max: 1000).
+        page_size: Number of records returned per page (default: 50, max: 1000).
 
     Returns:
         JSON string with job output fields such as `status`, `all_records`,
         `candidate_records`, `valid_records`, `progress_validated`, `page`,
         `page_size`, and `total_pages`.
-        Iterate pages while `page < total_pages` to fetch the full result set.
+        Always iterate all pages while `page < total_pages` to fetch the full
+        currently available result set.
+        `page`, `page_size`, and `total_pages` only describe currently
+        available records, not future records that may still be produced.
         Do not treat a single partial pull as final unless status is terminal.
+        After terminal `completed`, verify collected records across pages match
+        `valid_records`; if not, wait briefly and re-pull all pages once.
+        When presenting only a sample batch (for example 10 records), always
+        report `candidate_records`, `progress_validated`, `valid_records`, and
+        pagination fields so users know:
+        - whether more results are already available via pagination
+        - whether more results may still appear (`progress_validated < candidate_records`)
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
