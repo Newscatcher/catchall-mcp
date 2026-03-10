@@ -134,15 +134,25 @@ Exceptions: `check_health` and `get_version` do not require an API key.
 8. Use `continue_job` only when you need more records processed (cost-affecting).
    This only applies to jobs originally submitted with `limit`.
    If a job was submitted without `limit`, there is nothing to continue.
-   `new_limit` must be greater than the previous limit. After continuing, repeat polling and pulling.
+   If `new_limit` is provided, it must be greater than the previous limit.
+   If `new_limit` is omitted, API defaults to your plan maximum. After continuing, repeat polling and pulling.
 
 ## Understanding `limit` vs `page_size` — IMPORTANT
 These two parameters serve completely different purposes:
 - `limit` (submit_query, continue_job): Controls how many records the system PROCESSES. Users pay per record, so limit controls cost. Start with a low limit (e.g. 10-50) to preview results cheaply, then use continue_job with a higher new_limit if more are needed.
-- `page_size` (pull_results default 50; list_user_jobs default 100): Controls how many records are RETURNED per API call (max 1000). This is free pagination — it does not affect cost or processing. If a job has 244 total records, use page/page_size to iterate through ALL of them across multiple pull_results calls (e.g. page=1, page=2, page=3 with page_size=50).
+- `page_size` (pull_results default 100; list_user_jobs default 100): Controls how many records are RETURNED per API call (max 1000). This is free pagination — it does not affect cost or processing. If a job has 244 total records, use page/page_size to iterate through ALL of them across multiple pull_results calls (e.g. page=1, page=2, page=3 with page_size=100).
 - `page`, `page_size`, and `total_pages` are about records already available to pull; they do not indicate how many new records may still be produced.
 - Use `candidate_records` and `progress_validated` to track remaining processing (`progress_validated < candidate_records` means more results may still appear).
 To get all records from a completed job, check total_pages in the pull_results response and iterate through every page. Do NOT use continue_job just to see more records that already exist — use pagination instead.
+
+## Enrichment output notes
+- `enrichment.enrichment_confidence` is always present in pulled records.
+- Company enrichments are structured objects with:
+  - `source_text`
+  - `confidence`
+  - `metadata.name`
+  - `metadata.domain_url`
+  - `metadata.domain_url_confidence`
 
 ## Monitors workflow (explore -> refine -> automate)
 1. Submit and refine a job until results match your needs
@@ -151,9 +161,10 @@ To get all records from a completed job, check total_pages in the pull_results r
 4. Use enable_monitor / disable_monitor / update_monitor to control monitors
 
 ## Monitor constraints (API-enforced)
-- Reference jobs for create_monitor must have `end_date` within the last 7 days
-- Monitor schedules must have at least a 24-hour interval
-- update_monitor only updates webhook configuration; schedule and reference job cannot be changed
+- If `backfill=true`, reference job `end_date` must be within the last 7 days
+- If `backfill=false`, reference job age constraint does not apply
+- Minimum monitor schedule frequency depends on your plan
+- update_monitor can change webhook and run `limit`; schedule and reference job cannot be changed
 
 ## Meta tools
 - check_health and get_version map to `/health` and `/version` and work without API key""",
@@ -224,6 +235,12 @@ def validate_new_limit(new_limit: int) -> None:
     """Validate continue_job new_limit."""
     if new_limit < 1:
         raise ValueError("new_limit must be >= 1.")
+
+
+def validate_monitor_limit(limit: int) -> None:
+    """Validate monitor run limit."""
+    if limit < 10:
+        raise ValueError("limit must be >= 10.")
 
 
 def coerce_definition_list(value: Any, field_name: str) -> list[dict[str, Any]] | None:
@@ -623,7 +640,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size: int = 50) -> str:
+async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size: int = 100) -> str:
     """
     Retrieve the results of a job.
 
@@ -637,12 +654,12 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         job_id: The job ID returned from submit_query
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
         page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
-        page_size: Number of records returned per page (default: 50, max: 1000).
+        page_size: Number of records returned per page (default: 100, max: 1000).
 
     Returns:
         JSON string with job output fields such as `status`, `all_records`,
-        `candidate_records`, `valid_records`, `progress_validated`, `page`,
-        `page_size`, and `total_pages`.
+        `error`, `limit`, `candidate_records`, `valid_records`,
+        `progress_validated`, `page`, `page_size`, and `total_pages`.
         Always iterate all pages while `page < total_pages` to fetch the full
         currently available result set.
         `page`, `page_size`, and `total_pages` only describe currently
@@ -672,7 +689,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
 
 @mcp.tool()
-async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
+async def continue_job(job_id: str, new_limit: int | None = None, api_key: str = "") -> str:
     """
     Expand a job by processing more records beyond the initial limit.
 
@@ -681,11 +698,12 @@ async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
 
     This only applies to jobs originally submitted with `limit`.
     If a job was submitted without `limit`, there is nothing to continue.
-    The new_limit must be greater than the previous limit.
+    The new_limit must be greater than the previous limit when provided.
+    If omitted, API defaults to your plan maximum.
 
     Args:
         job_id: The job ID to continue processing
-        new_limit: New record processing limit (must exceed the previous limit).
+        new_limit: Optional new record processing limit (must exceed the previous limit if provided).
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
 
     Returns:
@@ -693,12 +711,15 @@ async def continue_job(job_id: str, new_limit: int, api_key: str = "") -> str:
         After continuation is accepted, poll status again and pull results again.
     """
     try:
-        validate_new_limit(new_limit)
+        body: dict[str, Any] = {"job_id": job_id}
+        if new_limit is not None:
+            validate_new_limit(new_limit)
+            body["new_limit"] = new_limit
         result = await make_api_request(
             api_key=api_key,
             method="POST",
             path="/catchAll/continue",
-            json_data={"job_id": job_id, "new_limit": new_limit},
+            json_data=body,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -747,6 +768,8 @@ async def create_monitor(
     reference_job_id: str,
     schedule: str,
     api_key: str = "",
+    limit: int | None = None,
+    backfill: bool = True,
     webhook_url: str = "",
     webhook_method: str = "POST",
     webhook_headers: dict[str, str] | None = None,
@@ -761,13 +784,16 @@ async def create_monitor(
 
     The schedule is defined in natural language (e.g., 'every day at 9 AM EST').
     Always include a timezone. API-enforced constraints apply:
-    - Reference job end_date must be within the last 7 days
-    - Minimum schedule frequency is every 24 hours
+    - If `backfill=true`, reference job end_date must be within the last 7 days
+    - If `backfill=false`, reference job age does not matter
+    - Minimum schedule frequency depends on your plan
 
     Args:
         reference_job_id: ID of a completed job to use as the template
         schedule: Natural language schedule (e.g., 'every day at 9 AM EST', 'every Monday at 8 AM UTC', 'every 48 hours')
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        limit: Optional max records per run (minimum 10). If omitted, API uses plan default.
+        backfill: Optional gap-fill toggle before first run (default true).
         webhook_url: Optional webhook URL to receive results on each run
         webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
         webhook_headers: Optional dict of custom HTTP headers for the webhook
@@ -781,7 +807,11 @@ async def create_monitor(
         body: dict[str, Any] = {
             "reference_job_id": reference_job_id,
             "schedule": schedule,
+            "backfill": backfill,
         }
+        if limit is not None:
+            validate_monitor_limit(limit)
+            body["limit"] = limit
 
         webhook = build_webhook_payload(
             webhook_url=webhook_url,
@@ -807,7 +837,7 @@ async def create_monitor(
 
 
 @mcp.tool()
-async def list_monitors(api_key: str = "") -> str:
+async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
     """
     List all your monitors.
 
@@ -815,15 +845,19 @@ async def list_monitors(api_key: str = "") -> str:
 
     Args:
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
 
     Returns:
-        JSON with total_monitors and list of monitors
+        JSON with total, page, page_size, total_pages, and monitors
     """
     try:
+        validate_page_params(page, page_size, max_page_size=1000)
         result = await make_api_request(
             api_key=api_key,
             method="GET",
             path="/catchAll/monitors",
+            params={"page": page, "page_size": page_size},
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -917,22 +951,27 @@ async def disable_monitor(monitor_id: str, api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def enable_monitor(monitor_id: str, api_key: str = "") -> str:
+async def enable_monitor(monitor_id: str, api_key: str = "", backfill: bool | None = None) -> str:
     """
     Enable a previously disabled monitor to resume its scheduled runs.
 
     Args:
         monitor_id: The monitor ID to enable
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        backfill: Optional backfill behavior for resume.
 
     Returns:
         Confirmation that the monitor was enabled
     """
     try:
+        body: dict[str, Any] | None = None
+        if backfill is not None:
+            body = {"backfill": backfill}
         result = await make_api_request(
             api_key=api_key,
             method="POST",
             path=f"/catchAll/monitors/{monitor_id}/enable",
+            json_data=body,
         )
         return json.dumps(result, indent=2) if result else "Monitor enabled successfully."
     except ValueError as e:
@@ -945,6 +984,7 @@ async def enable_monitor(monitor_id: str, api_key: str = "") -> str:
 async def update_monitor(
     monitor_id: str,
     api_key: str = "",
+    limit: int | None = None,
     webhook_url: str = "",
     webhook_method: str = "POST",
     webhook_headers: dict[str, str] | None = None,
@@ -952,13 +992,14 @@ async def update_monitor(
     webhook_auth: list[str] | None = None,
 ) -> str:
     """
-    Update a monitor's webhook configuration.
+    Update a monitor's webhook configuration and per-run limit.
 
     Note: schedule and reference_job_id cannot be modified through this endpoint.
 
     Args:
         monitor_id: The monitor ID to update
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        limit: Optional updated maximum records per run (minimum 10).
         webhook_url: New webhook URL
         webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
         webhook_headers: Optional dict of custom HTTP headers for the webhook
@@ -970,6 +1011,9 @@ async def update_monitor(
     """
     try:
         body: dict[str, Any] = {}
+        if limit is not None:
+            validate_monitor_limit(limit)
+            body["limit"] = limit
 
         webhook = build_webhook_payload(
             webhook_url=webhook_url,

@@ -44,18 +44,36 @@ API key precedence (highest to lowest):
 8. Pull with `pull_results`; partial data appears during `enriching`.
 9. Paginate while `page < total_pages` to retrieve all available records.
 10. Use `continue_job` only to process more records (cost-affecting). It applies only to jobs originally submitted with `limit`.
+11. `continue_job.new_limit` is optional; if omitted, API defaults to your plan maximum.
+12. `page/page_size/total_pages` represent already-available records; use `progress_validated < candidate_records` to detect if more records may still appear.
 
 ## Limit vs Page Size
 
 - `limit` (`submit_query`, `continue_job`) controls how many records are processed and therefore affects cost.
 - `page_size` (`pull_results`, `list_user_jobs`) controls pagination only and does not affect processing cost.
+- `pull_results.page_size` default is `100`.
 - `page_size` range is `1..1000`.
+- `pull_results` response includes `error` (failed jobs) and `limit` (applied job limit).
 
 ## API-Enforced Monitor Constraints
 
-- `create_monitor`: reference job `end_date` must be within the last 7 days.
-- `create_monitor`: minimum schedule frequency is 24 hours.
-- `update_monitor`: only webhook config can be changed; schedule and reference job are immutable.
+- `create_monitor.backfill=true`: reference job `end_date` must be within the last 7 days.
+- `create_monitor.backfill=false`: reference job age constraint does not apply.
+- Monitor minimum schedule frequency depends on plan.
+- `create_monitor` supports optional `limit` (minimum `10`) and `backfill` (default `true`).
+- `enable_monitor` supports optional `backfill`.
+- `update_monitor` supports webhook updates and optional run `limit` updates.
+- `list_monitors` supports pagination via `page` and `page_size`, and returns `total`, `page`, `page_size`, `total_pages`, `monitors`.
+
+## Enrichment Output Notes
+
+- `enrichment.enrichment_confidence` is always present.
+- Company enrichments are structured objects with:
+  - `source_text`
+  - `confidence`
+  - `metadata.name`
+  - `metadata.domain_url`
+  - `metadata.domain_url_confidence`
 
 ## Error Handling
 

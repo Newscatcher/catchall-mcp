@@ -229,6 +229,11 @@ class ValidationHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.validate_new_limit(0)
 
+    def test_validate_monitor_limit(self) -> None:
+        server.validate_monitor_limit(10)
+        with self.assertRaises(ValueError):
+            server.validate_monitor_limit(9)
+
     def test_validate_webhook_method_and_auth(self) -> None:
         self.assertEqual(server.validate_webhook_method("post"), "POST")
         self.assertEqual(server.validate_webhook_method("PUT"), "PUT")
@@ -403,6 +408,15 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                server.continue_job,
+                {"job_id": "job-1"},
+                "POST",
+                "/catchAll/continue",
+                {"job_id": "job-1"},
+                None,
+                True,
+            ),
+            (
                 server.list_user_jobs,
                 {"page": 3, "page_size": 25},
                 "GET",
@@ -416,7 +430,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 {"reference_job_id": "job-1", "schedule": "every day at 9 AM UTC"},
                 "POST",
                 "/catchAll/monitors/create",
-                {"reference_job_id": "job-1", "schedule": "every day at 9 AM UTC"},
+                {"reference_job_id": "job-1", "schedule": "every day at 9 AM UTC", "backfill": True},
                 None,
                 True,
             ),
@@ -426,7 +440,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 "GET",
                 "/catchAll/monitors",
                 None,
-                None,
+                {"page": 1, "page_size": 100},
                 True,
             ),
             (
@@ -457,6 +471,15 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                server.enable_monitor,
+                {"monitor_id": "mon-1", "backfill": False},
+                "POST",
+                "/catchAll/monitors/mon-1/enable",
+                {"backfill": False},
+                None,
+                True,
+            ),
+            (
                 server.disable_monitor,
                 {"monitor_id": "mon-1"},
                 "POST",
@@ -471,6 +494,15 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 "PATCH",
                 "/catchAll/monitors/mon-1",
                 {"webhook": {"url": "https://example.com/webhook", "method": "POST"}},
+                None,
+                True,
+            ),
+            (
+                server.update_monitor,
+                {"monitor_id": "mon-1", "limit": 10},
+                "PATCH",
+                "/catchAll/monitors/mon-1",
+                {"limit": 10},
                 None,
                 True,
             ),
@@ -619,6 +651,25 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     "webhook_auth": ["only-user"],
                 },
                 "webhook_auth must contain exactly two values: [username, password].",
+            ),
+            (
+                server.create_monitor,
+                {
+                    "reference_job_id": "job-1",
+                    "schedule": "every day at 9 AM UTC",
+                    "limit": 9,
+                },
+                "limit must be >= 10.",
+            ),
+            (
+                server.update_monitor,
+                {"monitor_id": "mon-1", "limit": 9},
+                "limit must be >= 10.",
+            ),
+            (
+                server.list_monitors,
+                {"page": 0},
+                "page must be >= 1.",
             ),
             (
                 server.submit_query,
