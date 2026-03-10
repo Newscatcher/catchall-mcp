@@ -13,36 +13,30 @@ from __future__ import annotations
 import contextvars
 import json
 import os
-from typing import Any, Literal
-from typing_extensions import TypedDict
+from typing import Any
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from validators import (
+    EnrichmentDefinition,
+    ValidatorDefinition,
+    build_webhook_payload,
+    coerce_definition_list,
+    validate_enrichment_definitions,
+    validate_monitor_limit,
+    validate_new_limit,
+    validate_page_params,
+    validate_sort,
+    validate_validator_definitions,
+)
 
 # Context variable to store the API key from URL for the current session
 session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("session_api_key", default="")
 
 # API Configuration
 API_BASE_URL = "https://catchall.newscatcherapi.com"
-ENRICHMENT_TYPES = {"text", "number", "date", "option", "url", "dict", "company"}
-
-
-class ValidatorDefinition(TypedDict):
-    """Schema for a custom validator."""
-
-    name: str
-    description: str
-    type: Literal["boolean"]
-
-
-class EnrichmentDefinition(TypedDict):
-    """Schema for a custom enrichment."""
-
-    name: str
-    description: str
-    type: Literal["text", "number", "date", "option", "url", "dict", "company"]
 
 
 class ApiKeyMiddleware(Middleware):
@@ -80,7 +74,7 @@ Exceptions: `check_health` and `get_version` do not require an API key.
 - Use generic web search for simple one-off question answering when a classic search is sufficient.
 - Prefer this MCP when the user needs:
   - Multiple results, ranked lists, or broad discovery
-  - Structured filtering/extraction (`validators`, `enrichments`, `schema`)
+  - Structured filtering/extraction (`validators`, `enrichments`)
   - Date-bounded investigations and event tracking
   - Reproducible runs (`job_id`) with pagination and cost control (`limit`)
   - Ongoing monitoring (`create_monitor`) and scheduled reruns
@@ -216,180 +210,6 @@ def get_optional_api_key(api_key: str = "") -> str:
     return os.environ.get("CATCHALL_API_KEY", "")
 
 
-def validate_page_params(page: int, page_size: int, max_page_size: int = 1000) -> None:
-    """Validate pagination parameters."""
-    if page < 1:
-        raise ValueError("page must be >= 1.")
-    if page_size < 1 or page_size > max_page_size:
-        raise ValueError(f"page_size must be between 1 and {max_page_size}.")
-
-
-def validate_sort(sort: str) -> str:
-    """Validate monitor jobs sort order."""
-    if sort not in {"asc", "desc"}:
-        raise ValueError("sort must be either 'asc' or 'desc'.")
-    return sort
-
-
-def validate_new_limit(new_limit: int) -> None:
-    """Validate continue_job new_limit."""
-    if new_limit < 1:
-        raise ValueError("new_limit must be >= 1.")
-
-
-def validate_monitor_limit(limit: int) -> None:
-    """Validate monitor run limit."""
-    if limit < 10:
-        raise ValueError("limit must be >= 10.")
-
-
-def coerce_definition_list(value: Any, field_name: str) -> list[dict[str, Any]] | None:
-    """Accept list input or JSON-string list input for definitions."""
-    if value is None:
-        return None
-
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"{field_name} must be valid JSON array when provided as string."
-            ) from exc
-        value = parsed
-
-    if not isinstance(value, list):
-        raise ValueError(f"{field_name} must be a JSON array when provided.")
-
-    return value
-
-
-def validate_validator_definitions(
-    validators: list[dict[str, Any]] | None,
-) -> list[ValidatorDefinition] | None:
-    """Validate and normalize custom validators."""
-    if validators is None:
-        return None
-
-    normalized: list[ValidatorDefinition] = []
-    for idx, validator in enumerate(validators):
-        if not isinstance(validator, dict):
-            raise ValueError(f"validators[{idx}] must be an object.")
-
-        name = validator.get("name")
-        description = validator.get("description")
-        validator_type = validator.get("type", "boolean")
-
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"validators[{idx}].name must be a non-empty string.")
-        if not isinstance(description, str) or not description.strip():
-            raise ValueError(f"validators[{idx}].description must be a non-empty string.")
-        if validator_type != "boolean":
-            raise ValueError(f"validators[{idx}].type must be 'boolean'.")
-
-        normalized.append(
-            {
-                "name": name.strip(),
-                "description": description.strip(),
-                "type": "boolean",
-            }
-        )
-
-    return normalized
-
-
-def validate_enrichment_definitions(
-    enrichments: list[dict[str, Any]] | None,
-) -> list[EnrichmentDefinition] | None:
-    """Validate custom enrichments."""
-    if enrichments is None:
-        return None
-
-    normalized: list[EnrichmentDefinition] = []
-    for idx, enrichment in enumerate(enrichments):
-        if not isinstance(enrichment, dict):
-            raise ValueError(f"enrichments[{idx}] must be an object.")
-
-        name = enrichment.get("name")
-        description = enrichment.get("description")
-        enrichment_type = enrichment.get("type")
-
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"enrichments[{idx}].name must be a non-empty string.")
-        if not isinstance(description, str) or not description.strip():
-            raise ValueError(f"enrichments[{idx}].description must be a non-empty string.")
-        if not isinstance(enrichment_type, str) or enrichment_type not in ENRICHMENT_TYPES:
-            allowed = ", ".join(sorted(ENRICHMENT_TYPES))
-            raise ValueError(f"enrichments[{idx}].type must be one of: {allowed}.")
-
-        normalized.append(
-            {
-                "name": name.strip(),
-                "description": description.strip(),
-                "type": enrichment_type,  # type: ignore[typeddict-item]
-            }
-        )
-
-    return normalized
-
-
-def validate_webhook_method(webhook_method: str) -> str:
-    """Validate webhook HTTP method."""
-    normalized = webhook_method.upper()
-    if normalized not in {"POST", "PUT"}:
-        raise ValueError("webhook_method must be 'POST' or 'PUT'.")
-    return normalized
-
-
-def validate_webhook_auth(webhook_auth: list[str] | None) -> None:
-    """Validate webhook basic auth tuple."""
-    if webhook_auth is None:
-        return
-    if len(webhook_auth) != 2:
-        raise ValueError("webhook_auth must contain exactly two values: [username, password].")
-    if not all(isinstance(item, str) and item for item in webhook_auth):
-        raise ValueError("webhook_auth values must be non-empty strings.")
-
-
-def build_webhook_payload(
-    webhook_url: str,
-    webhook_method: str,
-    webhook_headers: dict[str, str] | None,
-    webhook_params: dict[str, str] | None,
-    webhook_auth: list[str] | None,
-) -> dict[str, Any] | None:
-    """Build and validate optional webhook payload."""
-    has_webhook_extras = (
-        webhook_headers is not None
-        or webhook_params is not None
-        or webhook_auth is not None
-        or webhook_method.upper() != "POST"
-    )
-
-    if not webhook_url:
-        if has_webhook_extras:
-            raise ValueError(
-                "webhook_url is required when providing webhook_method, "
-                "webhook_headers, webhook_params, or webhook_auth."
-            )
-        return None
-
-    normalized_method = validate_webhook_method(webhook_method)
-    validate_webhook_auth(webhook_auth)
-
-    webhook: dict[str, Any] = {"url": webhook_url, "method": normalized_method}
-    if webhook_headers:
-        webhook["headers"] = webhook_headers
-    if webhook_params:
-        webhook["params"] = webhook_params
-    if webhook_auth:
-        webhook["auth"] = webhook_auth
-
-    return webhook
-
-
 async def make_api_request(
     api_key: str,
     method: str,
@@ -451,13 +271,13 @@ async def submit_query(
     end_date: str = "",
     validators: list[ValidatorDefinition] | str | None = None,
     enrichments: list[EnrichmentDefinition] | str | None = None,
-    schema: str = "",
 ) -> str:
     """
     Create a new CatchAll processing job from a natural-language query.
 
     Use when:
-    - You need a new `job_id` for a new web search request.
+    - You want to start a new CatchAll web research run from a user query.
+    - You want the API to fetch/process sources and then return structured results.
 
     Do not use when:
     - You want status for an existing job (use `get_job_status`).
@@ -472,32 +292,30 @@ async def submit_query(
     - `end_date` must be after `start_date`.
     - Dates outside your plan lookback limits return API 400.
     - `limit` controls processed record count (cost-affecting). In this MCP, `limit <= 0` means the field is omitted and API defaults apply.
-    - `schema` is a template string using placeholders (e.g., [ACQUIRER], [TARGET], [AMOUNT]); API generates `schema_based_summary`.
     - `validators` / `enrichments` may be passed either as arrays or as JSON-string arrays (for client compatibility).
     - `validators[].type` must be `boolean` (if omitted, it defaults to `boolean`).
-    - `enrichments[].type` supported values: text, number, date, option, url, dict, company.
+    - `enrichments[].type` supported values: text, number, date, option, url, company.
 
     Basic examples:
     - validators:
       `[{"name":"is_acquisition_event","description":"true if page describes an acquisition","type":"boolean"}]`
     - enrichments:
       `[{"name":"acquiring_company","description":"Extract acquiring company","type":"company"},{"name":"deal_value","description":"Extract announced deal value","type":"number"}]`
-    - schema:
-      `"[ACQUIRER] acquired [TARGET] for [AMOUNT]"`
 
     Next step:
-    - Poll `get_job_status` until completed/failed, then call `pull_results`.
+    - Save the returned `job_id`.
+    - Poll `get_job_status` and call `pull_results` (partial results can appear before completion).
 
     Args:
         query: Plain text search intent (required).
         api_key: CatchAll API key. Optional if provided via URL session or CATCHALL_API_KEY.
-        context: Optional extra context to focus extraction.
+        context: Optional guidance on what to prioritize (for example, target entities,
+            event types, and specific data points you want captured in enrichments).
         limit: Optional processing cap; affects cost.
         start_date: Optional ISO 8601 UTC start of search window.
         end_date: Optional ISO 8601 UTC end of search window.
         validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
         enrichments: Optional custom enrichments (`name`, `description`, `type`), as array or JSON-string array.
-        schema: Optional summary template string.
 
     Returns:
         JSON string with `{"job_id":"<uuid>"}`.
@@ -526,8 +344,6 @@ async def submit_query(
             body["validators"] = normalized_validators
         if normalized_enrichments:
             body["enrichments"] = normalized_enrichments
-        if schema:
-            body["schema"] = schema
 
         result = await make_api_request(
             api_key=api_key,
@@ -566,7 +382,8 @@ async def initialize_query(
     Args:
         query: Natural language query to preview (required).
         api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
-        context: Optional context to refine suggestions.
+        context: Optional guidance on what to prioritize so suggested validators,
+            enrichments, and dates align with your target data points.
 
     Returns:
         JSON string with `validators`, `enrichments`, `start_date`, `end_date`,
@@ -660,6 +477,8 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         JSON string with job output fields such as `status`, `all_records`,
         `error`, `limit`, `candidate_records`, `valid_records`,
         `progress_validated`, `page`, `page_size`, and `total_pages`.
+        Stop only after terminal status (`completed` or `failed`) and the
+        final pull is done.
         Always iterate all pages while `page < total_pages` to fetch the full
         currently available result set.
         `page`, `page_size`, and `total_pages` only describe currently

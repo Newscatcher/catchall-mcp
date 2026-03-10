@@ -67,6 +67,7 @@ def _install_test_stubs() -> None:
 _install_test_stubs()
 
 import server
+import validators
 
 
 class DummyResponse:
@@ -196,59 +197,59 @@ class ApiRequestAuthTests(unittest.IsolatedAsyncioTestCase):
 
 class ValidationHelperTests(unittest.TestCase):
     def test_coerce_definition_list(self) -> None:
-        parsed = server.coerce_definition_list(
+        parsed = validators.coerce_definition_list(
             '[{"name":"is_event","description":"true if event"}]',
             "validators",
         )
         self.assertEqual(parsed, [{"name": "is_event", "description": "true if event"}])
-        self.assertIsNone(server.coerce_definition_list("", "validators"))
-        self.assertIsNone(server.coerce_definition_list(None, "validators"))
+        self.assertIsNone(validators.coerce_definition_list("", "validators"))
+        self.assertIsNone(validators.coerce_definition_list(None, "validators"))
 
         with self.assertRaises(ValueError):
-            server.coerce_definition_list("{bad-json", "validators")
+            validators.coerce_definition_list("{bad-json", "validators")
         with self.assertRaises(ValueError):
-            server.coerce_definition_list('{"name":"not-an-array"}', "validators")
+            validators.coerce_definition_list('{"name":"not-an-array"}', "validators")
 
     def test_validate_page_params(self) -> None:
-        server.validate_page_params(1, 1000)
+        validators.validate_page_params(1, 1000)
         with self.assertRaises(ValueError):
-            server.validate_page_params(0, 1)
+            validators.validate_page_params(0, 1)
         with self.assertRaises(ValueError):
-            server.validate_page_params(1, 0)
+            validators.validate_page_params(1, 0)
         with self.assertRaises(ValueError):
-            server.validate_page_params(1, 1001)
+            validators.validate_page_params(1, 1001)
 
     def test_validate_sort(self) -> None:
-        self.assertEqual(server.validate_sort("asc"), "asc")
-        self.assertEqual(server.validate_sort("desc"), "desc")
+        self.assertEqual(validators.validate_sort("asc"), "asc")
+        self.assertEqual(validators.validate_sort("desc"), "desc")
         with self.assertRaises(ValueError):
-            server.validate_sort("latest")
+            validators.validate_sort("latest")
 
     def test_validate_new_limit(self) -> None:
-        server.validate_new_limit(1)
+        validators.validate_new_limit(1)
         with self.assertRaises(ValueError):
-            server.validate_new_limit(0)
+            validators.validate_new_limit(0)
 
     def test_validate_monitor_limit(self) -> None:
-        server.validate_monitor_limit(10)
+        validators.validate_monitor_limit(10)
         with self.assertRaises(ValueError):
-            server.validate_monitor_limit(9)
+            validators.validate_monitor_limit(9)
 
     def test_validate_webhook_method_and_auth(self) -> None:
-        self.assertEqual(server.validate_webhook_method("post"), "POST")
-        self.assertEqual(server.validate_webhook_method("PUT"), "PUT")
+        self.assertEqual(validators.validate_webhook_method("post"), "POST")
+        self.assertEqual(validators.validate_webhook_method("PUT"), "PUT")
         with self.assertRaises(ValueError):
-            server.validate_webhook_method("PATCH")
+            validators.validate_webhook_method("PATCH")
 
-        server.validate_webhook_auth(["user", "pass"])
+        validators.validate_webhook_auth(["user", "pass"])
         with self.assertRaises(ValueError):
-            server.validate_webhook_auth(["user"])
+            validators.validate_webhook_auth(["user"])
         with self.assertRaises(ValueError):
-            server.validate_webhook_auth(["user", ""])
+            validators.validate_webhook_auth(["user", ""])
 
     def test_build_webhook_payload_requires_url_for_extras(self) -> None:
         with self.assertRaises(ValueError):
-            server.build_webhook_payload(
+            validators.build_webhook_payload(
                 webhook_url="",
                 webhook_method="POST",
                 webhook_headers={"x-test": "1"},
@@ -256,7 +257,7 @@ class ValidationHelperTests(unittest.TestCase):
                 webhook_auth=None,
             )
 
-        webhook = server.build_webhook_payload(
+        webhook = validators.build_webhook_payload(
             webhook_url="https://example.com/hook",
             webhook_method="put",
             webhook_headers={"Authorization": "Bearer token"},
@@ -275,7 +276,7 @@ class ValidationHelperTests(unittest.TestCase):
         )
 
     def test_validate_validator_definitions(self) -> None:
-        normalized = server.validate_validator_definitions(
+        normalized = validators.validate_validator_definitions(
             [
                 {
                     "name": "is_acquisition_event",
@@ -295,16 +296,16 @@ class ValidationHelperTests(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            server.validate_validator_definitions([{"name": "", "description": "d"}])  # type: ignore[list-item]
+            validators.validate_validator_definitions([{"name": "", "description": "d"}])  # type: ignore[list-item]
         with self.assertRaises(ValueError):
-            server.validate_validator_definitions([{"name": "ok", "description": ""}])  # type: ignore[list-item]
+            validators.validate_validator_definitions([{"name": "ok", "description": ""}])  # type: ignore[list-item]
         with self.assertRaises(ValueError):
-            server.validate_validator_definitions(  # type: ignore[list-item]
+            validators.validate_validator_definitions(  # type: ignore[list-item]
                 [{"name": "ok", "description": "d", "type": "number"}]
             )
 
     def test_validate_enrichment_definitions(self) -> None:
-        normalized = server.validate_enrichment_definitions(
+        normalized = validators.validate_enrichment_definitions(
             [
                 {
                     "name": "acquiring_company",
@@ -325,13 +326,13 @@ class ValidationHelperTests(unittest.TestCase):
         )
 
         with self.assertRaises(ValueError):
-            server.validate_enrichment_definitions([{"name": "", "description": "d", "type": "text"}])  # type: ignore[list-item]
+            validators.validate_enrichment_definitions([{"name": "", "description": "d", "type": "text"}])  # type: ignore[list-item]
         with self.assertRaises(ValueError):
-            server.validate_enrichment_definitions([{"name": "ok", "description": "", "type": "text"}])  # type: ignore[list-item]
+            validators.validate_enrichment_definitions([{"name": "ok", "description": "", "type": "text"}])  # type: ignore[list-item]
         with self.assertRaises(ValueError):
-            server.validate_enrichment_definitions([{"name": "ok", "description": "d"}])  # type: ignore[list-item]
+            validators.validate_enrichment_definitions([{"name": "ok", "description": "d"}])  # type: ignore[list-item]
         with self.assertRaises(ValueError):
-            server.validate_enrichment_definitions(  # type: ignore[list-item]
+            validators.validate_enrichment_definitions(  # type: ignore[list-item]
                 [{"name": "ok", "description": "d", "type": "boolean"}]
             )
 
@@ -693,7 +694,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     "query": "acquisitions",
                     "enrichments": [{"name": "deal_value", "description": "Extract value", "type": "boolean"}],
                 },
-                "enrichments[0].type must be one of: company, date, dict, number, option, text, url.",
+                "enrichments[0].type must be one of: company, date, number, option, text, url.",
             ),
             (
                 server.submit_query,
