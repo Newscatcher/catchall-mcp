@@ -18,7 +18,7 @@ from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.http import _current_http_request
 from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
     EnrichmentDefinition,
@@ -207,24 +207,27 @@ def _key_from_session() -> str:
 
     Checks two sources, in order:
     1. session_api_key ContextVar (set by ASGI middleware in the current task).
-    2. _session_api_keys dict keyed by mcp-session-id HTTP header — needed when
-       tool calls are processed in the long-lived session task rather than in the
-       ASGI request handler task where the ContextVar was set.
+    2. _current_http_request ContextVar — the session task inherits this from the
+       initialize request (which carries ?apiKey=), so query_params.get("apiKey")
+       resolves correctly even during tool calls in the long-lived session task.
+       Falls back to _session_api_keys lookup by mcp-session-id.
     """
     url_key = session_api_key.get("")
     if url_key:
         return url_key
 
     try:
-        request = get_http_request()
-        # Check ?apiKey= on the request itself (e.g., every request includes it)
-        direct_key = request.query_params.get("apiKey", "")
-        if direct_key:
-            return direct_key
-        # Look up stored key by mcp-session-id
-        session_id = request.headers.get("mcp-session-id", "")
-        if session_id:
-            return _session_api_keys.get(session_id, "")
+        request = _current_http_request.get()
+        if request is not None:
+            # The session task inherits the initialize request context, which
+            # carries ?apiKey= — this is the most reliable source.
+            direct_key = request.query_params.get("apiKey", "")
+            if direct_key:
+                return direct_key
+            # Fallback: look up stored key by mcp-session-id header
+            session_id = request.headers.get("mcp-session-id", "")
+            if session_id:
+                return _session_api_keys.get(session_id, "")
     except Exception:
         pass
 
