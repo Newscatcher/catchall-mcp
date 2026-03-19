@@ -18,6 +18,7 @@ from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.server.dependencies import get_http_request
 from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
     EnrichmentDefinition,
@@ -201,20 +202,49 @@ To get all records from a completed job, check total_pages in the pull_results r
 )
 
 
+def _key_from_session() -> str:
+    """Look up the API key for the current MCP session.
+
+    Checks two sources, in order:
+    1. session_api_key ContextVar (set by ASGI middleware in the current task).
+    2. _session_api_keys dict keyed by mcp-session-id HTTP header — needed when
+       tool calls are processed in the long-lived session task rather than in the
+       ASGI request handler task where the ContextVar was set.
+    """
+    url_key = session_api_key.get("")
+    if url_key:
+        return url_key
+
+    try:
+        request = get_http_request()
+        # Check ?apiKey= on the request itself (e.g., every request includes it)
+        direct_key = request.query_params.get("apiKey", "")
+        if direct_key:
+            return direct_key
+        # Look up stored key by mcp-session-id
+        session_id = request.headers.get("mcp-session-id", "")
+        if session_id:
+            return _session_api_keys.get(session_id, "")
+    except Exception:
+        pass
+
+    return ""
+
+
 def get_api_key(api_key: str = "") -> str:
     """Get API key from parameter, URL session, or environment variable.
 
     Priority order:
     1. api_key parameter (explicit in tool call)
-    2. session_api_key (from URL query param ?apiKey=XXX)
+    2. session_api_key ContextVar or _session_api_keys dict (from ?apiKey= in URL)
     3. CATCHALL_API_KEY environment variable
     """
     if api_key:
         return api_key
 
-    url_key = session_api_key.get("")
-    if url_key:
-        return url_key
+    session_key = _key_from_session()
+    if session_key:
+        return session_key
 
     env_key = os.environ.get("CATCHALL_API_KEY", "")
     if env_key:
@@ -233,9 +263,9 @@ def get_optional_api_key(api_key: str = "") -> str:
     if api_key:
         return api_key
 
-    url_key = session_api_key.get("")
-    if url_key:
-        return url_key
+    session_key = _key_from_session()
+    if session_key:
+        return session_key
 
     return os.environ.get("CATCHALL_API_KEY", "")
 
