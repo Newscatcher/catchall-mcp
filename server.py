@@ -21,6 +21,9 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
+from starlette.middleware import Middleware as StarletteMiddleware
+from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
 from validators import (
     EnrichmentDefinition,
     ValidatorDefinition,
@@ -82,6 +85,29 @@ class ApiKeyMiddleware(Middleware):
         """Run on every MCP request so we capture key from URL or restore from session."""
         await self._capture_api_key_from_request()
         return await call_next(context)
+
+
+class ApiKeyCaptureHTTPMiddleware:
+    """Starlette ASGI middleware: capture ?apiKey= from any HTTP request (GET or POST).
+
+    Many MCP clients send the key only on the first request (e.g. GET to establish
+    session); that request never goes through MCP message middleware. This runs for
+    every HTTP request so we capture the key and push to _pending_api_keys; the
+    FastMCP middleware then associates it with the session when the first POST
+    with mcp-session-id arrives.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            request = Request(scope)
+            api_key = request.query_params.get("apiKey", "").strip()
+            if api_key:
+                async with _api_key_store_lock:
+                    _pending_api_keys.append(api_key)
+        await self.app(scope, receive, send)
 
 
 # Create the FastMCP server
@@ -188,6 +214,19 @@ To get all records from a completed job, check total_pages in the pull_results r
 
 # Add middleware to extract API key from URL query parameters
 mcp.add_middleware(ApiKeyMiddleware())
+
+# Inject HTTP-level capture so we see ?apiKey= on GET (and every) request.
+# FastMCP message middleware only runs for POSTs with MCP payloads; the initial
+# GET that establishes the session often carries the key and would otherwise be missed.
+_original_http_app = mcp.http_app
+
+def _http_app_with_api_key_capture(self: Any, *args: Any, **kwargs: Any) -> Any:
+    middleware = list(kwargs.get("middleware") or [])
+    middleware.insert(0, StarletteMiddleware(ApiKeyCaptureHTTPMiddleware))
+    kwargs["middleware"] = middleware
+    return _original_http_app(self, *args, **kwargs)
+
+mcp.http_app = _http_app_with_api_key_capture  # type: ignore[method-assign]
 
 
 def get_api_key(api_key: str = "") -> str:
