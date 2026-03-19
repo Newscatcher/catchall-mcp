@@ -3,8 +3,8 @@ MCP Server for Newscatcher CatchAll API
 
 This server provides tools to interact with the Newscatcher CatchAll API.
 Users can provide their API key via (in order of precedence):
-1. The api_key parameter in each tool call
-2. URL query parameter: ?apiKey=YOUR_KEY (recommended for Claude Web, Claude Desktop)
+1. URL query parameter: ?apiKey=YOUR_KEY (recommended for Claude Web, Claude Desktop)
+2. The api_key parameter in each tool call
 3. The CATCHALL_API_KEY environment variable
 """
 
