@@ -172,8 +172,8 @@ def get_api_key(api_key: str = "") -> str:
     """Get API key from parameter, URL session, or environment variable.
 
     Priority order:
-    1. api_key parameter (explicit in tool call)
-    2. session_api_key (from URL query param ?apiKey=XXX)
+    1. session_api_key (from URL query param ?apiKey=XXX)
+    2. api_key parameter (explicit in tool call)
     3. CATCHALL_API_KEY environment variable
     """
     # Check explicit parameter first
@@ -192,8 +192,8 @@ def get_api_key(api_key: str = "") -> str:
 
     raise ValueError(
         "API key is required. Provide it via: "
-        "1) api_key tool parameter, "
-        "2) URL parameter ?apiKey=YOUR_KEY, or "
+        "1) URL parameter ?apiKey=YOUR_KEY, or "
+        "2) api_key tool parameter, "
         "3) CATCHALL_API_KEY environment variable."
     )
 
