@@ -10,20 +10,15 @@ Users can provide their API key via (in order of precedence):
 
 from __future__ import annotations
 
-import asyncio
 import contextvars
 import json
 import os
-from collections import deque
 from typing import Any
 
 import httpx
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from starlette.middleware import Middleware as StarletteMiddleware
-from starlette.requests import Request
-from starlette.types import ASGIApp, Receive, Scope, Send
 from validators import (
     EnrichmentDefinition,
     ValidatorDefinition,
@@ -37,77 +32,34 @@ from validators import (
     validate_validator_definitions,
 )
 
-# Context variable to store the API key from URL for the current request
+# Context variable to store the API key from URL for the current session
 session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("session_api_key", default="")
-
-# Session-scoped store: many MCP clients send the key only in the connection URL;
-# subsequent requests (e.g. tools/call) often omit query params. We capture the key
-# on the first request (no mcp-session-id) and associate it when we see the session id.
-MCP_SESSION_ID_HEADER = "mcp-session-id"
-_session_api_keys: dict[str, str] = {}
-_pending_api_keys: deque = deque()
-_api_key_store_lock = asyncio.Lock()
 
 # API Configuration
 API_BASE_URL = "https://catchall.newscatcherapi.com"
 
 
 class ApiKeyMiddleware(Middleware):
-    """Middleware to extract API key from URL query parameters and persist by session.
+    """Middleware to extract API key from URL query parameters.
 
-    Many MCP clients (Claude, Cursor, etc.) use the connection URL with the key
-    (e.g. .../mcp?apiKey=YOUR_KEY) but do not forward query params on subsequent
-    POST requests. We capture the key on the first request and associate it with
-    the MCP session so later tool calls can use it without the client resending it.
+    This allows users to pass their API key once in the connection URL:
+    https://your-server.fastmcp.app/mcp?apiKey=YOUR_KEY
+
+    The key is then used for all subsequent tool calls without
+    needing to pass it in every request.
     """
 
-    async def _capture_api_key_from_request(self) -> None:
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        """Extract API key from HTTP request query params before tool execution."""
         try:
             request = get_http_request()
-            api_key = request.query_params.get("apiKey", "").strip()
-            session_id = request.headers.get(MCP_SESSION_ID_HEADER)
-
-            async with _api_key_store_lock:
-                if api_key:
-                    session_api_key.set(api_key)
-                    # Do not push to _pending_api_keys here: ApiKeyCaptureHTTPMiddleware
-                    # already ran for this request and pushed; avoid double-push on POST.
-                elif session_id and session_id not in _session_api_keys and _pending_api_keys:
-                    stored = _pending_api_keys.popleft()
-                    _session_api_keys[session_id] = stored
-                    session_api_key.set(stored)
-                elif session_id and session_id in _session_api_keys:
-                    session_api_key.set(_session_api_keys[session_id])
-        except Exception:
-            pass
-
-    async def on_request(self, context: MiddlewareContext, call_next):
-        """Run on every MCP request so we capture key from URL or restore from session."""
-        await self._capture_api_key_from_request()
-        return await call_next(context)
-
-
-class ApiKeyCaptureHTTPMiddleware:
-    """Starlette ASGI middleware: capture ?apiKey= from any HTTP request (GET or POST).
-
-    Many MCP clients send the key only on the first request (e.g. GET to establish
-    session); that request never goes through MCP message middleware. This runs for
-    every HTTP request so we capture the key and push to _pending_api_keys; the
-    FastMCP middleware then associates it with the session when the first POST
-    with mcp-session-id arrives.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http":
-            request = Request(scope)
-            api_key = request.query_params.get("apiKey", "").strip()
+            api_key = request.query_params.get("apiKey", "")
             if api_key:
-                async with _api_key_store_lock:
-                    _pending_api_keys.append(api_key)
-        await self.app(scope, receive, send)
+                session_api_key.set(api_key)
+        except Exception:
+            # Not running in HTTP context (e.g., stdio), skip
+            pass
+        return await call_next(context)
 
 
 # Create the FastMCP server
@@ -215,31 +167,13 @@ To get all records from a completed job, check total_pages in the pull_results r
 # Add middleware to extract API key from URL query parameters
 mcp.add_middleware(ApiKeyMiddleware())
 
-# Inject HTTP-level capture so we see ?apiKey= on GET (and every) request.
-# FastMCP message middleware only runs for POSTs with MCP payloads; the initial
-# GET that establishes the session often carries the key and would otherwise be missed.
-# Wrapped in try/except so cloud builds (e.g. Horizon) never fail at startup if
-# the platform restricts env or middleware setup.
-_original_http_app = mcp.http_app
-
-def _http_app_with_api_key_capture(self: Any, *args: Any, **kwargs: Any) -> Any:
-    try:
-        middleware = list(kwargs.get("middleware") or [])
-        middleware.insert(0, StarletteMiddleware(ApiKeyCaptureHTTPMiddleware))
-        kwargs["middleware"] = middleware
-    except Exception:
-        pass
-    return _original_http_app(self, *args, **kwargs)
-
-mcp.http_app = _http_app_with_api_key_capture  # type: ignore[method-assign]
-
 
 def get_api_key(api_key: str = "") -> str:
-    """Get API key from parameter, URL/session, or environment variable.
+    """Get API key from parameter, URL session, or environment variable.
 
     Priority order:
     1. api_key parameter (explicit in tool call)
-    2. session_api_key (current request query param or session store)
+    2. session_api_key (from URL query param ?apiKey=XXX)
     3. CATCHALL_API_KEY environment variable
     """
     if api_key:
@@ -248,16 +182,6 @@ def get_api_key(api_key: str = "") -> str:
     url_key = session_api_key.get("")
     if url_key:
         return url_key
-
-    try:
-        request = get_http_request()
-        session_id = request.headers.get(MCP_SESSION_ID_HEADER)
-        if session_id:
-            stored = _session_api_keys.get(session_id)
-            if stored:
-                return stored
-    except Exception:
-        pass
 
     env_key = os.environ.get("CATCHALL_API_KEY", "")
     if env_key:
@@ -272,23 +196,13 @@ def get_api_key(api_key: str = "") -> str:
 
 
 def get_optional_api_key(api_key: str = "") -> str:
-    """Get API key without requiring one."""
+    """Get API key without requiring one (for check_health, get_version)."""
     if api_key:
         return api_key
 
     url_key = session_api_key.get("")
     if url_key:
         return url_key
-
-    try:
-        request = get_http_request()
-        session_id = request.headers.get(MCP_SESSION_ID_HEADER)
-        if session_id:
-            stored = _session_api_keys.get(session_id)
-            if stored:
-                return stored
-    except Exception:
-        pass
 
     return os.environ.get("CATCHALL_API_KEY", "")
 
