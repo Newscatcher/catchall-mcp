@@ -14,11 +14,11 @@ import contextvars
 import json
 import os
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_request
-from fastmcp.server.middleware import Middleware, MiddlewareContext
+from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
     EnrichmentDefinition,
     ValidatorDefinition,
@@ -32,34 +32,70 @@ from validators import (
     validate_validator_definitions,
 )
 
-# Context variable to store the API key from URL for the current session
+# Context variable to store the API key for the current request
 session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("session_api_key", default="")
+
+# Session-level storage: mcp-session-id -> api_key
+# Persists the API key across the full lifecycle of an MCP session.
+_session_api_keys: dict[str, str] = {}
 
 # API Configuration
 API_BASE_URL = "https://catchall.newscatcherapi.com"
 
 
-class ApiKeyMiddleware(Middleware):
-    """Middleware to extract API key from URL query parameters.
+class ApiKeyASGIMiddleware:
+    """ASGI middleware to extract and persist the API key across MCP sessions.
 
-    This allows users to pass their API key once in the connection URL:
-    https://your-server.fastmcp.app/mcp?apiKey=YOUR_KEY
+    With Streamable HTTP transport, clients include ?apiKey=KEY only on the
+    initial `initialize` request. Subsequent tool call requests use an
+    `mcp-session-id` header instead. This middleware:
 
-    The key is then used for all subsequent tool calls without
-    needing to pass it in every request.
+    1. On the initialize request: captures ?apiKey=KEY and intercepts the
+       response to store the key mapped to the assigned mcp-session-id.
+    2. On all subsequent requests: looks up the stored key by mcp-session-id
+       and sets the session_api_key context variable for the current request.
     """
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        """Extract API key from HTTP request query params before tool execution."""
-        try:
-            request = get_http_request()
-            api_key = request.query_params.get("apiKey", "")
-            if api_key:
-                session_api_key.set(api_key)
-        except Exception:
-            # Not running in HTTP context (e.g., stdio), skip
-            pass
-        return await call_next(context)
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Extract ?apiKey= from query string
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        api_key = params.get("apiKey", [""])[0]
+
+        # Extract mcp-session-id from request headers
+        headers_dict = {k.lower(): v for k, v in scope.get("headers", [])}
+        session_id = headers_dict.get(b"mcp-session-id", b"").decode("utf-8")
+
+        # Restore key from session storage if available
+        if session_id and session_id in _session_api_keys:
+            effective_key = _session_api_keys[session_id]
+        else:
+            effective_key = api_key
+
+        if effective_key:
+            session_api_key.set(effective_key)
+
+        if api_key and not session_id:
+            # This is the initialize request — intercept the response to capture
+            # the server-assigned mcp-session-id and store the key mapping.
+            async def send_with_session_capture(message: Any) -> None:
+                if message["type"] == "http.response.start":
+                    resp_headers = {k.lower(): v for k, v in message.get("headers", [])}
+                    new_session_id = resp_headers.get(b"mcp-session-id", b"").decode("utf-8")
+                    if new_session_id:
+                        _session_api_keys[new_session_id] = api_key
+                await send(message)
+
+            await self.app(scope, receive, send_with_session_capture)
+        else:
+            await self.app(scope, receive, send)
 
 
 # Create the FastMCP server
@@ -163,9 +199,6 @@ To get all records from a completed job, check total_pages in the pull_results r
 ## Meta tools
 - check_health and get_version map to `/health` and `/version` and work without API key""",
 )
-
-# Add middleware to extract API key from URL query parameters
-mcp.add_middleware(ApiKeyMiddleware())
 
 
 def get_api_key(api_key: str = "") -> str:
@@ -908,5 +941,9 @@ async def get_version(api_key: str = "") -> str:
         return f"Unexpected error: {str(e)}"
 
 
+# Module-level ASGI app for deployment via `uvicorn server:app`
+app = mcp.http_app(middleware=[StarletteMiddleware(ApiKeyASGIMiddleware)])
+
+
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="streamable-http", middleware=[StarletteMiddleware(ApiKeyASGIMiddleware)])
