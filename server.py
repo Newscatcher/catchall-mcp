@@ -941,9 +941,23 @@ async def get_version(api_key: str = "") -> str:
         return f"Unexpected error: {str(e)}"
 
 
+# Patch mcp.http_app to always inject ApiKeyASGIMiddleware, regardless of how the
+# server is invoked (uvicorn server:app, fastmcp run server.py:mcp, python server.py, etc.)
+_original_http_app = mcp.http_app
+
+
+def _http_app_with_api_key_middleware(*args: Any, middleware: list | None = None, **kwargs: Any) -> Any:
+    mw = [StarletteMiddleware(ApiKeyASGIMiddleware)]
+    if middleware:
+        mw = mw + list(middleware)
+    return _original_http_app(*args, middleware=mw, **kwargs)
+
+
+mcp.http_app = _http_app_with_api_key_middleware  # type: ignore[method-assign]
+
 # Module-level ASGI app for deployment via `uvicorn server:app`
-app = mcp.http_app(middleware=[StarletteMiddleware(ApiKeyASGIMiddleware)])
+app = mcp.http_app()
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http", middleware=[StarletteMiddleware(ApiKeyASGIMiddleware)])
+    mcp.run(transport="streamable-http")
