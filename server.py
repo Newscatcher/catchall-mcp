@@ -10,9 +10,11 @@ Users can provide their API key via (in order of precedence):
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
+from collections import deque
 from typing import Any
 
 import httpx
@@ -32,33 +34,53 @@ from validators import (
     validate_validator_definitions,
 )
 
-# Context variable to store the API key from URL for the current session
+# Context variable to store the API key from URL for the current request
 session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("session_api_key", default="")
+
+# Session-scoped store: many MCP clients send the key only in the connection URL;
+# subsequent requests (e.g. tools/call) often omit query params. We capture the key
+# on the first request (no mcp-session-id) and associate it when we see the session id.
+MCP_SESSION_ID_HEADER = "mcp-session-id"
+_session_api_keys: dict[str, str] = {}
+_pending_api_keys: deque = deque()
+_api_key_store_lock = asyncio.Lock()
 
 # API Configuration
 API_BASE_URL = "https://catchall.newscatcherapi.com"
 
 
 class ApiKeyMiddleware(Middleware):
-    """Middleware to extract API key from URL query parameters.
+    """Middleware to extract API key from URL query parameters and persist by session.
 
-    This allows users to pass their API key once in the connection URL:
-    https://your-server.fastmcp.app/mcp?apiKey=YOUR_KEY
-
-    The key is then used for all subsequent tool calls without
-    needing to pass it in every request.
+    Many MCP clients (Claude, Cursor, etc.) use the connection URL with the key
+    (e.g. .../mcp?apiKey=YOUR_KEY) but do not forward query params on subsequent
+    POST requests. We capture the key on the first request and associate it with
+    the MCP session so later tool calls can use it without the client resending it.
     """
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        """Extract API key from HTTP request query params before tool execution."""
+    async def _capture_api_key_from_request(self) -> None:
         try:
             request = get_http_request()
-            api_key = request.query_params.get("apiKey", "")
-            if api_key:
-                session_api_key.set(api_key)
+            api_key = request.query_params.get("apiKey", "").strip()
+            session_id = request.headers.get(MCP_SESSION_ID_HEADER)
+
+            async with _api_key_store_lock:
+                if api_key:
+                    session_api_key.set(api_key)
+                    if not session_id:
+                        _pending_api_keys.append(api_key)
+                elif session_id and session_id not in _session_api_keys and _pending_api_keys:
+                    stored = _pending_api_keys.popleft()
+                    _session_api_keys[session_id] = stored
+                    session_api_key.set(stored)
+                elif session_id and session_id in _session_api_keys:
+                    session_api_key.set(_session_api_keys[session_id])
         except Exception:
-            # Not running in HTTP context (e.g., stdio), skip
             pass
+
+    async def on_request(self, context: MiddlewareContext, call_next):
+        """Run on every MCP request so we capture key from URL or restore from session."""
+        await self._capture_api_key_from_request()
         return await call_next(context)
 
 
@@ -169,23 +191,30 @@ mcp.add_middleware(ApiKeyMiddleware())
 
 
 def get_api_key(api_key: str = "") -> str:
-    """Get API key from parameter, URL session, or environment variable.
+    """Get API key from parameter, URL/session, or environment variable.
 
     Priority order:
-    1. session_api_key (from URL query param ?apiKey=XXX)
-    2. api_key parameter (explicit in tool call)
+    1. api_key parameter (explicit in tool call)
+    2. session_api_key (current request query param or session store)
     3. CATCHALL_API_KEY environment variable
     """
-    # Check explicit parameter first
     if api_key:
         return api_key
 
-    # Check session key from URL
     url_key = session_api_key.get("")
     if url_key:
         return url_key
 
-    # Fall back to environment variable
+    try:
+        request = get_http_request()
+        session_id = request.headers.get(MCP_SESSION_ID_HEADER)
+        if session_id:
+            stored = _session_api_keys.get(session_id)
+            if stored:
+                return stored
+    except Exception:
+        pass
+
     env_key = os.environ.get("CATCHALL_API_KEY", "")
     if env_key:
         return env_key
@@ -206,6 +235,16 @@ def get_optional_api_key(api_key: str = "") -> str:
     url_key = session_api_key.get("")
     if url_key:
         return url_key
+
+    try:
+        request = get_http_request()
+        session_id = request.headers.get(MCP_SESSION_ID_HEADER)
+        if session_id:
+            stored = _session_api_keys.get(session_id)
+            if stored:
+                return stored
+    except Exception:
+        pass
 
     return os.environ.get("CATCHALL_API_KEY", "")
 
