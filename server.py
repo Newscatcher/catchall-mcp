@@ -70,8 +70,8 @@ class ApiKeyMiddleware(Middleware):
             async with _api_key_store_lock:
                 if api_key:
                     session_api_key.set(api_key)
-                    if not session_id:
-                        _pending_api_keys.append(api_key)
+                    # Do not push to _pending_api_keys here: ApiKeyCaptureHTTPMiddleware
+                    # already ran for this request and pushed; avoid double-push on POST.
                 elif session_id and session_id not in _session_api_keys and _pending_api_keys:
                     stored = _pending_api_keys.popleft()
                     _session_api_keys[session_id] = stored
@@ -218,12 +218,17 @@ mcp.add_middleware(ApiKeyMiddleware())
 # Inject HTTP-level capture so we see ?apiKey= on GET (and every) request.
 # FastMCP message middleware only runs for POSTs with MCP payloads; the initial
 # GET that establishes the session often carries the key and would otherwise be missed.
+# Wrapped in try/except so cloud builds (e.g. Horizon) never fail at startup if
+# the platform restricts env or middleware setup.
 _original_http_app = mcp.http_app
 
 def _http_app_with_api_key_capture(self: Any, *args: Any, **kwargs: Any) -> Any:
-    middleware = list(kwargs.get("middleware") or [])
-    middleware.insert(0, StarletteMiddleware(ApiKeyCaptureHTTPMiddleware))
-    kwargs["middleware"] = middleware
+    try:
+        middleware = list(kwargs.get("middleware") or [])
+        middleware.insert(0, StarletteMiddleware(ApiKeyCaptureHTTPMiddleware))
+        kwargs["middleware"] = middleware
+    except Exception:
+        pass
     return _original_http_app(self, *args, **kwargs)
 
 mcp.http_app = _http_app_with_api_key_capture  # type: ignore[method-assign]
