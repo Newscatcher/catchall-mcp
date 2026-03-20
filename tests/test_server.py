@@ -546,6 +546,15 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                server.get_user_limits,
+                {},
+                "POST",
+                "/catchAll/user/limits",
+                None,
+                None,
+                True,
+            ),
+            (
                 server.check_health,
                 {},
                 "GET",
@@ -643,6 +652,22 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+
+    async def test_submit_query_mode_included_when_provided(self) -> None:
+        for mode_value in ("lite", "base"):
+            with self.subTest(mode=mode_value):
+                with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+                    mock_api.return_value = {"job_id": "job-3"}
+                    await _unwrap(server.submit_query)(query="test", mode=mode_value)
+                called = mock_api.await_args.kwargs
+                self.assertEqual(called["json_data"]["mode"], mode_value)
+
+    async def test_submit_query_mode_omitted_when_empty(self) -> None:
+        with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"job_id": "job-4"}
+            await _unwrap(server.submit_query)(query="test")
+        called = mock_api.await_args.kwargs
+        self.assertNotIn("mode", called["json_data"])
 
     async def test_tool_validations_fail_early(self) -> None:
         invalid_calls = [
@@ -746,6 +771,11 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 server.update_monitor,
                 {"monitor_id": "mon-1", "webhook_params": {"k": "v"}},
                 "webhook_url is required when providing webhook_method, webhook_headers, webhook_params, or webhook_auth.",
+            ),
+            (
+                server.submit_query,
+                {"query": "acquisitions", "mode": "fast"},
+                "mode must be 'lite' or 'base'.",
             ),
         ]
 

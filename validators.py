@@ -145,6 +145,13 @@ def validate_enrichment_definitions(
     return normalized
 
 
+def validate_mode(mode: str) -> str:
+    """Validate submit_query job mode."""
+    if mode not in {"lite", "base"}:
+        raise ValueError("mode must be 'lite' or 'base'.")
+    return mode
+
+
 def validate_webhook_method(webhook_method: str) -> str:
     """Validate webhook HTTP method."""
     normalized = webhook_method.upper()

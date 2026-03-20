@@ -26,6 +26,7 @@ from validators import (
     build_webhook_payload,
     coerce_definition_list,
     validate_enrichment_definitions,
+    validate_mode,
     validate_monitor_limit,
     validate_new_limit,
     validate_page_params,
@@ -350,6 +351,7 @@ async def submit_query(
     end_date: str = "",
     validators: list[ValidatorDefinition] | str | None = None,
     enrichments: list[EnrichmentDefinition] | str | None = None,
+    mode: str = "",
 ) -> str:
     """
     Create a new CatchAll processing job from a natural-language query.
@@ -395,6 +397,8 @@ async def submit_query(
         end_date: Optional ISO 8601 UTC end of search window.
         validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
         enrichments: Optional custom enrichments (`name`, `description`, `type`), as array or JSON-string array.
+        mode: Optional job processing mode: `"lite"` (faster, lower cost, less detail) or `"base"` (default,
+            full extraction). If omitted, the API defaults to `"base"`.
 
     Returns:
         JSON string with `{"job_id":"<uuid>"}`.
@@ -409,6 +413,8 @@ async def submit_query(
         parsed_enrichments = coerce_definition_list(enrichments, "enrichments")
         normalized_validators = validate_validator_definitions(parsed_validators)
         normalized_enrichments = validate_enrichment_definitions(parsed_enrichments)
+        if mode:
+            validate_mode(mode)
 
         body: dict[str, Any] = {"query": query}
         if context:
@@ -423,6 +429,8 @@ async def submit_query(
             body["validators"] = normalized_validators
         if normalized_enrichments:
             body["enrichments"] = normalized_enrichments
+        if mode:
+            body["mode"] = mode
 
         result = await make_api_request(
             api_key=api_key,
@@ -554,8 +562,9 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
     Returns:
         JSON string with job output fields such as `status`, `all_records`,
-        `error`, `limit`, `candidate_records`, `valid_records`,
+        `error`, `limit`, `mode`, `candidate_records`, `valid_records`,
         `progress_validated`, `page`, `page_size`, and `total_pages`.
+        `mode` reflects the processing mode used (`"lite"` or `"base"`).
         Stop only after terminal status (`completed` or `failed`) and the
         final pull is done.
         Always iterate all pages while `page < total_pages` to fetch the full
@@ -639,7 +648,8 @@ async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100)
         page_size: Number of results per page (default: 100, max: 1000)
 
     Returns:
-        JSON with list of your submitted jobs
+        JSON with list of your submitted jobs. Each job includes `mode`
+        (`"lite"` or `"base"`) and `user_key` identifying the API key owner.
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
@@ -747,7 +757,8 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
         page_size: Number of results per page (default: 100, max: 1000).
 
     Returns:
-        JSON with total, page, page_size, total_pages, and monitors
+        JSON with total, page, page_size, total_pages, and monitors.
+        Each monitor includes `user_key` identifying the API key owner.
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
@@ -928,6 +939,35 @@ async def update_monitor(
             method="PATCH",
             path=f"/catchAll/monitors/{monitor_id}",
             json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_user_limits(api_key: str = "") -> str:
+    """
+    Retrieve plan features and current usage limits for your API key.
+
+    Use when:
+    - You want to know how many records/jobs/monitors your plan allows.
+    - You want to check current usage against plan limits before running a large job.
+
+    Args:
+        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+
+    Returns:
+        JSON with `features` — a list of billing features with usage, each containing:
+        `name`, `code`, `value_type`, `value` (plan limit), and `current_usage`.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/user/limits",
         )
         return json.dumps(result, indent=2)
     except ValueError as e:

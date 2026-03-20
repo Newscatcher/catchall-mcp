@@ -19,6 +19,7 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `pull_monitor_results` | `GET` | `/catchAll/monitors/pull/{monitor_id}` |
 | `enable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/enable` |
 | `disable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/disable` |
+| `get_user_limits` | `POST` | `/catchAll/user/limits` |
 | `check_health` | `GET` | `/health` |
 | `get_version` | `GET` | `/version` |
 
