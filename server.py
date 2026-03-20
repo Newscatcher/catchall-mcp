@@ -198,6 +198,14 @@ To get all records from a completed job, check total_pages in the pull_results r
 - Minimum monitor schedule frequency depends on your plan
 - update_monitor can change webhook and run `limit`; schedule and reference job cannot be changed
 
+## Job modes (`mode` parameter in `submit_query`)
+- `base` (default): processing all the candidates, extracting enrichments per each record, deduplicating on the enrichments. Use when you need want the full analysis on the whole available dataset
+- `lite`: faster and lower cost — skips enrichments and deduplication by enrichments; returns validated records only. Use when you need quick results or only need validator output without enrichment metadata.
+- If omitted, the API defaults to `base`.
+
+## Plan limits
+- Use `get_user_limits` to retrieve your plan's feature limits when facing some limitations while trying to submit jobs or monitors.
+
 ## Meta tools
 - check_health and get_version map to `/health` and `/version` and work without API key""",
 )
@@ -333,6 +341,8 @@ async def make_api_request(
         try:
             return response.json()
         except json.JSONDecodeError:
+            if response.text and response.text.strip():
+                raise ValueError(f"API returned non-JSON response: {response.text[:500]}")
             return {}
 
 
