@@ -194,6 +194,39 @@ class ApiRequestAuthTests(unittest.IsolatedAsyncioTestCase):
                 )
         mock_client.assert_not_called()
 
+    async def test_make_api_request_empty_body_returns_empty_dict(self) -> None:
+        """API returns 200 with empty body (e.g. list endpoints with no items)."""
+
+        class EmptyDummyResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                import json as _json
+                raise _json.JSONDecodeError("Empty body", "", 0)
+
+        class EmptyClientFactory:
+            def __call__(self, *args, **kwargs):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def request(self, *args, **kwargs):
+                return EmptyDummyResponse()
+
+        with patch("server.httpx.AsyncClient", side_effect=EmptyClientFactory()):
+            result = await server.make_api_request(
+                api_key="key",
+                method="GET",
+                path="/catchAll/monitors",
+                require_auth=True,
+            )
+        self.assertEqual(result, {})
+
 
 class ValidationHelperTests(unittest.TestCase):
     def test_coerce_definition_list(self) -> None:
@@ -337,6 +370,11 @@ class ValidationHelperTests(unittest.TestCase):
             )
 
 
+def _unwrap(tool_func):
+    """Return the underlying async function from a FastMCP FunctionTool wrapper."""
+    return tool_func.fn if hasattr(tool_func, "fn") else tool_func
+
+
 class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def _assert_tool_call(
         self,
@@ -350,7 +388,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
     ) -> None:
         with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
             mock_api.return_value = {"ok": True}
-            result = await tool_func(**tool_kwargs)
+            result = await _unwrap(tool_func)(**tool_kwargs)
 
         self.assertEqual(result, json.dumps({"ok": True}, indent=2))
         mock_api.assert_awaited_once()
@@ -528,13 +566,13 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         for case in cases:
-            with self.subTest(tool=case[0].__name__):
+            with self.subTest(tool=_unwrap(case[0]).__name__):
                 await self._assert_tool_call(*case)
 
     async def test_submit_query_normalizes_validator_type(self) -> None:
         with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
             mock_api.return_value = {"job_id": "job-1"}
-            result = await server.submit_query(
+            result = await _unwrap(server.submit_query)(
                 query="acquisitions",
                 validators=[
                     {
@@ -577,7 +615,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
     async def test_submit_query_accepts_stringified_definitions(self) -> None:
         with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
             mock_api.return_value = {"job_id": "job-2"}
-            result = await server.submit_query(
+            result = await _unwrap(server.submit_query)(
                 query="incidents",
                 validators='[{"name":"is_incident","description":"true if incident"}]',
                 enrichments='[{"name":"incident_type","description":"type of incident","type":"option"}]',
@@ -712,9 +750,10 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         for tool_func, kwargs, expected_error in invalid_calls:
-            with self.subTest(tool=tool_func.__name__, kwargs=kwargs):
+            fn = _unwrap(tool_func)
+            with self.subTest(tool=fn.__name__, kwargs=kwargs):
                 with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
-                    result = await tool_func(**kwargs)
+                    result = await fn(**kwargs)
                 self.assertEqual(result, f"Error: {expected_error}")
                 mock_api.assert_not_awaited()
 

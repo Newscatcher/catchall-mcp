@@ -329,7 +329,10 @@ async def make_api_request(
 
             raise ValueError(f"API Error ({response.status_code}): {error_msg}")
 
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            return {}
 
 
 # ---------------------------------------------------------------------------
