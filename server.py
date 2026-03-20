@@ -205,12 +205,13 @@ To get all records from a completed job, check total_pages in the pull_results r
 def _key_from_session() -> str:
     """Look up the API key for the current MCP session.
 
-    Checks two sources, in order:
+    Checks request sources in order:
     1. session_api_key ContextVar (set by ASGI middleware in the current task).
-    2. _current_http_request ContextVar — the session task inherits this from the
-       initialize request (which carries ?apiKey=), so query_params.get("apiKey")
-       resolves correctly even during tool calls in the long-lived session task.
-       Falls back to _session_api_keys lookup by mcp-session-id.
+    2. _current_http_request ContextVar — inspects the HTTP request for:
+       a. ?apiKey= query param (direct server access, no gateway)
+       b. x-api-key header (gateway deployment — header is forwarded by FastMCP Gateway)
+       c. Authorization: Bearer <key> header (gateway deployment, alternative)
+       d. _session_api_keys lookup by mcp-session-id (stateful session fallback)
     """
     url_key = session_api_key.get("")
     if url_key:
@@ -219,12 +220,24 @@ def _key_from_session() -> str:
     try:
         request = _current_http_request.get()
         if request is not None:
-            # The session task inherits the initialize request context, which
-            # carries ?apiKey= — this is the most reliable source.
+            # ?apiKey= query param — works for direct server access (no gateway)
             direct_key = request.query_params.get("apiKey", "")
             if direct_key:
                 return direct_key
-            # Fallback: look up stored key by mcp-session-id header
+
+            # x-api-key header — works through FastMCP Gateway (headers are forwarded)
+            header_key = request.headers.get("x-api-key", "")
+            if header_key:
+                return header_key
+
+            # Authorization: Bearer <key> — alternative header-based auth
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                bearer_key = auth_header[7:].strip()
+                if bearer_key:
+                    return bearer_key
+
+            # Session-ID lookup — stateful sessions only (no gateway)
             session_id = request.headers.get("mcp-session-id", "")
             if session_id:
                 return _session_api_keys.get(session_id, "")
