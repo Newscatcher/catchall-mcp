@@ -1008,7 +1008,7 @@ async def check_health(api_key: str = "") -> str:
     This tool maps to GET /health and does not require an API key.
 
     Args:
-        api_key: Optional CatchAll API key. If provided, sent with the request; otherwise unauthenticated.
+        api_key: Optional CatchAll API key.
 
     Returns:
         JSON with API health status
@@ -1035,7 +1035,7 @@ async def get_version(api_key: str = "") -> str:
     This tool maps to GET /version and does not require an API key.
 
     Args:
-        api_key: Optional CatchAll API key. If provided, sent with the request; otherwise unauthenticated.
+        api_key: Optional CatchAll API key.
 
     Returns:
         JSON with version information
