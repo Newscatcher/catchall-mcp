@@ -268,12 +268,13 @@ def _key_from_session() -> str:
 
 
 def get_api_key(api_key: str = "") -> str:
-    """Get API key from parameter, URL session, or environment variable.
+    """Get API key from parameter, HTTP headers, URL session, or environment variable.
 
     Priority order:
     1. api_key parameter (explicit in tool call)
-    2. session_api_key ContextVar or _session_api_keys dict (from ?apiKey= in URL)
-    3. CATCHALL_API_KEY environment variable
+    2. x-api-key header or Authorization: Bearer header (via _key_from_session)
+    3. ?apiKey= URL query parameter (direct server access only)
+    4. CATCHALL_API_KEY environment variable
     """
     if api_key:
         return api_key
@@ -287,10 +288,12 @@ def get_api_key(api_key: str = "") -> str:
         return env_key
 
     raise ValueError(
-        "API key is required. Provide it via: "
-        "1) URL parameter ?apiKey=YOUR_KEY, or "
-        "2) api_key tool parameter, "
-        "3) CATCHALL_API_KEY environment variable."
+        "API key is required. Provide it via one of: "
+        "1) api_key as a parameter in each HTTP request, "
+        "2) x-api-key HTTP header (recommended for hosted deployments), "
+        "3) Authorization: Bearer <key> HTTP header, "
+        "4) ?apiKey=YOUR_KEY URL parameter, "
+        "5) CATCHALL_API_KEY environment variable."
     )
 
 
