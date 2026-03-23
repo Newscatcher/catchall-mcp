@@ -2,10 +2,12 @@
 MCP Server for Newscatcher CatchAll API
 
 This server provides tools to interact with the Newscatcher CatchAll API.
-Users can provide their API key via (in order of precedence):
-1. URL query parameter: ?apiKey=YOUR_KEY (recommended for Claude Web, Claude Desktop)
-2. The api_key parameter in each tool call
-3. The CATCHALL_API_KEY environment variable
+API key precedence (highest to lowest):
+1. api_key tool parameter (explicit per-call)
+2. x-api-key request header (recommended for hosted/gateway deployments)
+3. Authorization: Bearer <key> request header
+4. URL query parameter: ?apiKey=YOUR_KEY
+5. CATCHALL_API_KEY environment variable
 """
 
 from __future__ import annotations
@@ -107,6 +109,15 @@ mcp = FastMCP(
 
 IMPORTANT: Most tools require a CatchAll API key. Get one at https://platform.newscatcherapi.com/
 Exceptions: `check_health` and `get_version` do not require an API key.
+
+## Authentication
+API key is resolved in this order (first match wins):
+1. `api_key` tool parameter — pass it directly in any tool call.
+2. `x-api-key` HTTP header — set once in your MCP client config (recommended for hosted deployments).
+3. `Authorization: Bearer <key>` HTTP header — alternative header-based auth.
+4. `?apiKey=YOUR_KEY` URL query parameter — works only for direct server access (not forwarded by the FastMCP Gateway).
+5. `CATCHALL_API_KEY` environment variable — set on the server host.
+If no key is found, tools return `Error: API key is required.`
 
 ## When to use this MCP (tool selection policy)
 - Use generic web search for simple one-off question answering when a classic search is sufficient.
@@ -399,7 +410,7 @@ async def submit_query(
 
     Args:
         query: Plain text search intent (required).
-        api_key: CatchAll API key. Optional if provided via URL session or CATCHALL_API_KEY.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize (for example, target entities,
             event types, and specific data points you want captured in enrichments).
         limit: Optional processing cap; affects cost.
@@ -478,7 +489,7 @@ async def initialize_query(
 
     Args:
         query: Natural language query to preview (required).
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize so suggested validators,
             enrichments, and dates align with your target data points.
 
@@ -535,7 +546,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with current job status, steps, and progress information
@@ -566,7 +577,7 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
         page_size: Number of records returned per page (default: 100, max: 1000).
 
@@ -621,7 +632,7 @@ async def continue_job(job_id: str, new_limit: int | None = None, api_key: str =
     Args:
         job_id: The job ID to continue processing
         new_limit: Optional new record processing limit (must exceed the previous limit if provided).
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with job_id, previous_limit, new_limit, and status.
@@ -653,7 +664,7 @@ async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100)
     Returns your job history with IDs, queries, statuses, and timestamps.
 
     Args:
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1)
         page_size: Number of results per page (default: 100, max: 1000)
 
@@ -709,7 +720,7 @@ async def create_monitor(
     Args:
         reference_job_id: ID of a completed job to use as the template
         schedule: Natural language schedule (e.g., 'every day at 9 AM EST', 'every Monday at 8 AM UTC', 'every 48 hours')
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         limit: Optional max records per run (minimum 10). If omitted, API uses plan default.
         backfill: Optional gap-fill toggle before first run (default true).
         webhook_url: Optional webhook URL to receive results on each run
@@ -762,7 +773,7 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
     Returns all monitors with their schedule, status, reference query, and webhook config.
 
     Args:
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 100, max: 1000).
 
@@ -794,7 +805,7 @@ async def pull_monitor_results(monitor_id: str, api_key: str = "") -> str:
 
     Args:
         monitor_id: The monitor ID to pull results from
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with monitor_id, cron_expression, reference_job, run_info, records, and all_records
@@ -821,7 +832,7 @@ async def list_monitor_jobs(monitor_id: str, api_key: str = "", sort: str = "asc
 
     Args:
         monitor_id: The monitor ID to list jobs for
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         sort: Sort order by start_date: 'asc' (default) or 'desc'
 
     Returns:
@@ -851,7 +862,7 @@ async def disable_monitor(monitor_id: str, api_key: str = "") -> str:
 
     Args:
         monitor_id: The monitor ID to disable
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         Confirmation that the monitor was disabled
@@ -876,7 +887,7 @@ async def enable_monitor(monitor_id: str, api_key: str = "", backfill: bool | No
 
     Args:
         monitor_id: The monitor ID to enable
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         backfill: Optional backfill behavior for resume.
 
     Returns:
@@ -917,7 +928,7 @@ async def update_monitor(
 
     Args:
         monitor_id: The monitor ID to update
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         limit: Optional updated maximum records per run (minimum 10).
         webhook_url: New webhook URL
         webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
@@ -967,7 +978,7 @@ async def get_user_limits(api_key: str = "") -> str:
     - You want to check current usage against plan limits before running a large job.
 
     Args:
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with `features` — a list of billing features with usage, each containing:
@@ -994,7 +1005,7 @@ async def check_health(api_key: str = "") -> str:
     This tool maps to GET /health and does not require an API key.
 
     Args:
-        api_key: Optional CatchAll API key.
+        api_key: Optional CatchAll API key. If provided, sent with the request; otherwise unauthenticated.
 
     Returns:
         JSON with API health status
@@ -1021,7 +1032,7 @@ async def get_version(api_key: str = "") -> str:
     This tool maps to GET /version and does not require an API key.
 
     Args:
-        api_key: Optional CatchAll API key.
+        api_key: Optional CatchAll API key. If provided, sent with the request; otherwise unauthenticated.
 
     Returns:
         JSON with version information
