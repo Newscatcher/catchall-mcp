@@ -19,6 +19,7 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `pull_monitor_results` | `GET` | `/catchAll/monitors/pull/{monitor_id}` |
 | `enable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/enable` |
 | `disable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/disable` |
+| `get_user_limits` | `POST` | `/catchAll/user/limits` |
 | `check_health` | `GET` | `/health` |
 | `get_version` | `GET` | `/version` |
 
@@ -27,10 +28,41 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 API key precedence (highest to lowest):
 
 1. `api_key` tool parameter
-2. URL query parameter `?apiKey=...`
-3. `CATCHALL_API_KEY` environment variable
+2. `x-api-key` request header
+3. `Authorization: Bearer <key>` request header
+4. URL query parameter `?apiKey=...`
+5. `CATCHALL_API_KEY` environment variable
 
 `check_health` and `get_version` do not require API key auth.
+
+### Hosted deployment (FastMCP Gateway)
+
+When deployed via fastmcp.app, a stateless gateway sits in front of the server. The gateway
+forwards HTTP headers to the backend but **not** URL query parameters. Use the `x-api-key`
+header or `CATCHALL_API_KEY` environment variable instead of `?apiKey=`.
+
+**Claude Code / Cursor:**
+
+```json
+{
+  "mcpServers": {
+    "catchall": {
+      "type": "http",
+      "url": "https://YOUR-DEPLOYMENT.fastmcp.app/mcp",
+      "headers": { "x-api-key": "YOUR_API_KEY" }
+    }
+  }
+}
+```
+
+Or via CLI:
+
+```bash
+claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mcp" \
+  --header "x-api-key: YOUR_API_KEY"
+```
+
+**Direct server access** (no gateway): `?apiKey=YOUR_KEY` in the URL still works.
 
 ## Core Workflow (Jobs)
 

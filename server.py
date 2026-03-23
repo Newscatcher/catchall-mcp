@@ -2,10 +2,12 @@
 MCP Server for Newscatcher CatchAll API
 
 This server provides tools to interact with the Newscatcher CatchAll API.
-Users can provide their API key via (in order of precedence):
-1. The api_key parameter in each tool call
-2. URL query parameter: ?apiKey=YOUR_KEY (recommended for Claude Web, Claude Desktop)
-3. The CATCHALL_API_KEY environment variable
+API key precedence (highest to lowest):
+1. api_key tool parameter (explicit per-call)
+2. x-api-key request header (recommended for hosted/gateway deployments)
+3. Authorization: Bearer <key> request header
+4. URL query parameter: ?apiKey=YOUR_KEY
+5. CATCHALL_API_KEY environment variable
 """
 
 from __future__ import annotations
@@ -14,17 +16,19 @@ import contextvars
 import json
 import os
 from typing import Any
+from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.server.dependencies import get_http_request
-from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.server.http import _current_http_request
+from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
     EnrichmentDefinition,
     ValidatorDefinition,
     build_webhook_payload,
     coerce_definition_list,
     validate_enrichment_definitions,
+    validate_mode,
     validate_monitor_limit,
     validate_new_limit,
     validate_page_params,
@@ -32,34 +36,70 @@ from validators import (
     validate_validator_definitions,
 )
 
-# Context variable to store the API key from URL for the current session
+# Context variable to store the API key for the current request
 session_api_key: contextvars.ContextVar[str] = contextvars.ContextVar("session_api_key", default="")
+
+# Session-level storage: mcp-session-id -> api_key
+# Persists the API key across the full lifecycle of an MCP session.
+_session_api_keys: dict[str, str] = {}
 
 # API Configuration
 API_BASE_URL = "https://catchall.newscatcherapi.com"
 
 
-class ApiKeyMiddleware(Middleware):
-    """Middleware to extract API key from URL query parameters.
+class ApiKeyASGIMiddleware:
+    """ASGI middleware to extract and persist the API key across MCP sessions.
 
-    This allows users to pass their API key once in the connection URL:
-    https://your-server.fastmcp.app/mcp?apiKey=YOUR_KEY
+    With Streamable HTTP transport, clients include ?apiKey=KEY only on the
+    initial `initialize` request. Subsequent tool call requests use an
+    `mcp-session-id` header instead. This middleware:
 
-    The key is then used for all subsequent tool calls without
-    needing to pass it in every request.
+    1. On the initialize request: captures ?apiKey=KEY and intercepts the
+       response to store the key mapped to the assigned mcp-session-id.
+    2. On all subsequent requests: looks up the stored key by mcp-session-id
+       and sets the session_api_key context variable for the current request.
     """
 
-    async def on_call_tool(self, context: MiddlewareContext, call_next):
-        """Extract API key from HTTP request query params before tool execution."""
-        try:
-            request = get_http_request()
-            api_key = request.query_params.get("apiKey", "")
-            if api_key:
-                session_api_key.set(api_key)
-        except Exception:
-            # Not running in HTTP context (e.g., stdio), skip
-            pass
-        return await call_next(context)
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Extract ?apiKey= from query string
+        query_string = scope.get("query_string", b"").decode("utf-8")
+        params = parse_qs(query_string)
+        api_key = params.get("apiKey", [""])[0]
+
+        # Extract mcp-session-id from request headers
+        headers_dict = {k.lower(): v for k, v in scope.get("headers", [])}
+        session_id = headers_dict.get(b"mcp-session-id", b"").decode("utf-8")
+
+        # Restore key from session storage if available
+        if session_id and session_id in _session_api_keys:
+            effective_key = _session_api_keys[session_id]
+        else:
+            effective_key = api_key
+
+        if effective_key:
+            session_api_key.set(effective_key)
+
+        if api_key and not session_id:
+            # This is the initialize request — intercept the response to capture
+            # the server-assigned mcp-session-id and store the key mapping.
+            async def send_with_session_capture(message: Any) -> None:
+                if message["type"] == "http.response.start":
+                    resp_headers = {k.lower(): v for k, v in message.get("headers", [])}
+                    new_session_id = resp_headers.get(b"mcp-session-id", b"").decode("utf-8")
+                    if new_session_id:
+                        _session_api_keys[new_session_id] = api_key
+                await send(message)
+
+            await self.app(scope, receive, send_with_session_capture)
+        else:
+            await self.app(scope, receive, send)
 
 
 # Create the FastMCP server
@@ -69,6 +109,15 @@ mcp = FastMCP(
 
 IMPORTANT: Most tools require a CatchAll API key. Get one at https://platform.newscatcherapi.com/
 Exceptions: `check_health` and `get_version` do not require an API key.
+
+## Authentication
+API key is resolved in this order (first match wins):
+1. `api_key` tool parameter — pass it directly in any tool call.
+2. `x-api-key` HTTP header — set once in your MCP client config (recommended for hosted deployments).
+3. `Authorization: Bearer <key>` HTTP header — alternative header-based auth.
+4. `?apiKey=YOUR_KEY` URL query parameter — works only for direct server access (not forwarded by the FastMCP Gateway).
+5. `CATCHALL_API_KEY` environment variable — set on the server host.
+If no key is found, tools return `Error: API key is required.`
 
 ## When to use this MCP (tool selection policy)
 - Use generic web search for simple one-off question answering when a classic search is sufficient.
@@ -160,52 +209,102 @@ To get all records from a completed job, check total_pages in the pull_results r
 - Minimum monitor schedule frequency depends on your plan
 - update_monitor can change webhook and run `limit`; schedule and reference job cannot be changed
 
+## Job modes (`mode` parameter in `submit_query`)
+- `base` (default): processing all the candidates, extracting enrichments per each record, deduplicating on the enrichments. Use when you need want the full analysis on the whole available dataset
+- `lite`: faster and lower cost — skips enrichments and deduplication by enrichments; returns validated records only. Use when you need quick results or only need validator output without enrichment metadata.
+- If omitted, the API defaults to `base`.
+
+## Plan limits
+- Use `get_user_limits` to retrieve your plan's feature limits when facing some limitations while trying to submit jobs or monitors.
+
 ## Meta tools
 - check_health and get_version map to `/health` and `/version` and work without API key""",
 )
 
-# Add middleware to extract API key from URL query parameters
-mcp.add_middleware(ApiKeyMiddleware())
 
+def _key_from_session() -> str:
+    """Look up the API key for the current MCP session.
 
-def get_api_key(api_key: str = "") -> str:
-    """Get API key from parameter, URL session, or environment variable.
-
-    Priority order:
-    1. api_key parameter (explicit in tool call)
-    2. session_api_key (from URL query param ?apiKey=XXX)
-    3. CATCHALL_API_KEY environment variable
+    Checks request sources in order:
+    1. session_api_key ContextVar (set by ASGI middleware in the current task).
+    2. _current_http_request ContextVar — inspects the HTTP request for:
+       a. ?apiKey= query param (direct server access, no gateway)
+       b. x-api-key header (gateway deployment — header is forwarded by FastMCP Gateway)
+       c. Authorization: Bearer <key> header (gateway deployment, alternative)
+       d. _session_api_keys lookup by mcp-session-id (stateful session fallback)
     """
-    # Check explicit parameter first
-    if api_key:
-        return api_key
-
-    # Check session key from URL
     url_key = session_api_key.get("")
     if url_key:
         return url_key
 
-    # Fall back to environment variable
+    try:
+        request = _current_http_request.get()
+        if request is not None:
+            # ?apiKey= query param — works for direct server access (no gateway)
+            direct_key = request.query_params.get("apiKey", "")
+            if direct_key:
+                return direct_key
+
+            # x-api-key header — works through FastMCP Gateway (headers are forwarded)
+            header_key = request.headers.get("x-api-key", "")
+            if header_key:
+                return header_key
+
+            # Authorization: Bearer <key> — alternative header-based auth
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.lower().startswith("bearer "):
+                bearer_key = auth_header[7:].strip()
+                if bearer_key:
+                    return bearer_key
+
+            # Session-ID lookup — stateful sessions only (no gateway)
+            session_id = request.headers.get("mcp-session-id", "")
+            if session_id:
+                return _session_api_keys.get(session_id, "")
+    except Exception:
+        pass
+
+    return ""
+
+
+def get_api_key(api_key: str = "") -> str:
+    """Get API key from parameter, HTTP headers, URL session, or environment variable.
+
+    Priority order:
+    1. api_key parameter (explicit in tool call)
+    2. x-api-key header or Authorization: Bearer header (via _key_from_session)
+    3. ?apiKey= URL query parameter (direct server access only)
+    4. CATCHALL_API_KEY environment variable
+    """
+    if api_key:
+        return api_key
+
+    session_key = _key_from_session()
+    if session_key:
+        return session_key
+
     env_key = os.environ.get("CATCHALL_API_KEY", "")
     if env_key:
         return env_key
 
     raise ValueError(
-        "API key is required. Provide it via: "
-        "1) api_key tool parameter, "
-        "2) URL parameter ?apiKey=YOUR_KEY, or "
-        "3) CATCHALL_API_KEY environment variable."
+        "API key is required. Provide it via one of: "
+        "1) api_key as a parameter in each HTTP request, "
+        "2) x-api-key HTTP header (recommended for hosted deployments), "
+        "3) Authorization: Bearer <key> HTTP header, "
+        "4) ?apiKey=YOUR_KEY URL parameter, "
+        "5) CATCHALL_API_KEY environment variable."
     )
 
 
 def get_optional_api_key(api_key: str = "") -> str:
-    """Get API key without requiring one."""
+    """Get API key without requiring one (for check_health, get_version)."""
     if api_key:
         return api_key
 
-    url_key = session_api_key.get("")
-    if url_key:
-        return url_key
+    session_key = _key_from_session()
+    if session_key:
+        return session_key
 
     return os.environ.get("CATCHALL_API_KEY", "")
 
@@ -253,7 +352,12 @@ async def make_api_request(
 
             raise ValueError(f"API Error ({response.status_code}): {error_msg}")
 
-        return response.json()
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            if response.text and response.text.strip():
+                raise ValueError(f"API returned non-JSON response: {response.text[:500]}")
+            return {}
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +375,7 @@ async def submit_query(
     end_date: str = "",
     validators: list[ValidatorDefinition] | str | None = None,
     enrichments: list[EnrichmentDefinition] | str | None = None,
+    mode: str = "",
 ) -> str:
     """
     Create a new CatchAll processing job from a natural-language query.
@@ -308,7 +413,7 @@ async def submit_query(
 
     Args:
         query: Plain text search intent (required).
-        api_key: CatchAll API key. Optional if provided via URL session or CATCHALL_API_KEY.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize (for example, target entities,
             event types, and specific data points you want captured in enrichments).
         limit: Optional processing cap; affects cost.
@@ -316,6 +421,8 @@ async def submit_query(
         end_date: Optional ISO 8601 UTC end of search window.
         validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
         enrichments: Optional custom enrichments (`name`, `description`, `type`), as array or JSON-string array.
+        mode: Optional job processing mode: `"lite"` (faster, lower cost, less detail) or `"base"` (default,
+            full extraction). If omitted, the API defaults to `"base"`.
 
     Returns:
         JSON string with `{"job_id":"<uuid>"}`.
@@ -330,6 +437,8 @@ async def submit_query(
         parsed_enrichments = coerce_definition_list(enrichments, "enrichments")
         normalized_validators = validate_validator_definitions(parsed_validators)
         normalized_enrichments = validate_enrichment_definitions(parsed_enrichments)
+        if mode:
+            validate_mode(mode)
 
         body: dict[str, Any] = {"query": query}
         if context:
@@ -344,6 +453,8 @@ async def submit_query(
             body["validators"] = normalized_validators
         if normalized_enrichments:
             body["enrichments"] = normalized_enrichments
+        if mode:
+            body["mode"] = mode
 
         result = await make_api_request(
             api_key=api_key,
@@ -381,7 +492,7 @@ async def initialize_query(
 
     Args:
         query: Natural language query to preview (required).
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize so suggested validators,
             enrichments, and dates align with your target data points.
 
@@ -438,7 +549,7 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with current job status, steps, and progress information
@@ -469,14 +580,15 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
     Args:
         job_id: The job ID returned from submit_query
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1). Use total_pages from the response to iterate through all results.
         page_size: Number of records returned per page (default: 100, max: 1000).
 
     Returns:
         JSON string with job output fields such as `status`, `all_records`,
-        `error`, `limit`, `candidate_records`, `valid_records`,
+        `error`, `limit`, `mode`, `candidate_records`, `valid_records`,
         `progress_validated`, `page`, `page_size`, and `total_pages`.
+        `mode` reflects the processing mode used (`"lite"` or `"base"`).
         Stop only after terminal status (`completed` or `failed`) and the
         final pull is done.
         Always iterate all pages while `page < total_pages` to fetch the full
@@ -523,7 +635,7 @@ async def continue_job(job_id: str, new_limit: int | None = None, api_key: str =
     Args:
         job_id: The job ID to continue processing
         new_limit: Optional new record processing limit (must exceed the previous limit if provided).
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with job_id, previous_limit, new_limit, and status.
@@ -555,12 +667,13 @@ async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100)
     Returns your job history with IDs, queries, statuses, and timestamps.
 
     Args:
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1)
         page_size: Number of results per page (default: 100, max: 1000)
 
     Returns:
-        JSON with list of your submitted jobs
+        JSON with list of your submitted jobs. Each job includes `mode`
+        (`"lite"` or `"base"`) and `user_key` identifying the API key owner.
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
@@ -610,7 +723,7 @@ async def create_monitor(
     Args:
         reference_job_id: ID of a completed job to use as the template
         schedule: Natural language schedule (e.g., 'every day at 9 AM EST', 'every Monday at 8 AM UTC', 'every 48 hours')
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         limit: Optional max records per run (minimum 10). If omitted, API uses plan default.
         backfill: Optional gap-fill toggle before first run (default true).
         webhook_url: Optional webhook URL to receive results on each run
@@ -663,12 +776,13 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
     Returns all monitors with their schedule, status, reference query, and webhook config.
 
     Args:
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 100, max: 1000).
 
     Returns:
-        JSON with total, page, page_size, total_pages, and monitors
+        JSON with total, page, page_size, total_pages, and monitors.
+        Each monitor includes `user_key` identifying the API key owner.
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
@@ -694,7 +808,7 @@ async def pull_monitor_results(monitor_id: str, api_key: str = "") -> str:
 
     Args:
         monitor_id: The monitor ID to pull results from
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         JSON with monitor_id, cron_expression, reference_job, run_info, records, and all_records
@@ -721,7 +835,7 @@ async def list_monitor_jobs(monitor_id: str, api_key: str = "", sort: str = "asc
 
     Args:
         monitor_id: The monitor ID to list jobs for
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         sort: Sort order by start_date: 'asc' (default) or 'desc'
 
     Returns:
@@ -751,7 +865,7 @@ async def disable_monitor(monitor_id: str, api_key: str = "") -> str:
 
     Args:
         monitor_id: The monitor ID to disable
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
     Returns:
         Confirmation that the monitor was disabled
@@ -776,7 +890,7 @@ async def enable_monitor(monitor_id: str, api_key: str = "", backfill: bool | No
 
     Args:
         monitor_id: The monitor ID to enable
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         backfill: Optional backfill behavior for resume.
 
     Returns:
@@ -817,7 +931,7 @@ async def update_monitor(
 
     Args:
         monitor_id: The monitor ID to update
-        api_key: Your CatchAll API key. Optional if CATCHALL_API_KEY env var is set.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         limit: Optional updated maximum records per run (minimum 10).
         webhook_url: New webhook URL
         webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
@@ -849,6 +963,35 @@ async def update_monitor(
             method="PATCH",
             path=f"/catchAll/monitors/{monitor_id}",
             json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_user_limits(api_key: str = "") -> str:
+    """
+    Retrieve plan features and current usage limits for your API key.
+
+    Use when:
+    - You want to know how many records/jobs/monitors your plan allows.
+    - You want to check current usage against plan limits before running a large job.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `features` — a list of billing features with usage, each containing:
+        `name`, `code`, `value_type`, `value` (plan limit), and `current_usage`.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/user/limits",
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -911,5 +1054,23 @@ async def get_version(api_key: str = "") -> str:
         return f"Unexpected error: {str(e)}"
 
 
+# Patch mcp.http_app to always inject ApiKeyASGIMiddleware, regardless of how the
+# server is invoked (uvicorn server:app, fastmcp run server.py:mcp, python server.py, etc.)
+_original_http_app = mcp.http_app
+
+
+def _http_app_with_api_key_middleware(*args: Any, middleware: list | None = None, **kwargs: Any) -> Any:
+    mw = [StarletteMiddleware(ApiKeyASGIMiddleware)]
+    if middleware:
+        mw = mw + list(middleware)
+    return _original_http_app(*args, middleware=mw, **kwargs)
+
+
+mcp.http_app = _http_app_with_api_key_middleware  # type: ignore[method-assign]
+
+# Module-level ASGI app for deployment via `uvicorn server:app`
+app = mcp.http_app()
+
+
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="streamable-http")
