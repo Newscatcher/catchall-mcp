@@ -324,7 +324,7 @@ async def make_api_request(
     if key:
         headers["x-api-key"] = key
 
-    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=60.0) as client:
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=60.0, follow_redirects=True) as client:
         response = await client.request(
             method=method,
             url=path,
