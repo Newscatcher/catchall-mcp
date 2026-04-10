@@ -1,0 +1,55 @@
+name: PR Integration Tests
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  integration-tests:
+    name: Run integration tests against PR code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install server dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Start MCP server from PR code
+        env:
+          CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
+        run: |
+          python server.py &
+          echo "SERVER_PID=$!" >> $GITHUB_ENV
+          for i in $(seq 1 20); do
+            if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+              echo "Server is up!"
+              break
+            fi
+            echo "Waiting for server... ($i/20)"
+            sleep 1
+          done
+
+      - name: Run integration tests
+        env:
+          MCP_SERVER_URL: http://localhost:8000/mcp
+          CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
+        run: |
+          pytest tests/integration/ -v -s
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -n "$SERVER_PID" ]; then
+            kill $SERVER_PID || true
+          fi
