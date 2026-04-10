@@ -789,7 +789,7 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
         result = await make_api_request(
             api_key=api_key,
             method="GET",
-            path="/catchAll/monitors",
+            path="/catchAll/monitors/",
             params={"page": page, "page_size": page_size},
         )
         return json.dumps(result, indent=2)
