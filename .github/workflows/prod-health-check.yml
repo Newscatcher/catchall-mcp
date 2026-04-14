@@ -1,0 +1,42 @@
+name: Prod Health Check
+
+on:
+  schedule:
+    - cron: "0 9 * * *"  # Every day at 9:00 AM UTC
+  workflow_dispatch:       # Manual trigger from GitHub UI
+
+jobs:
+  prod-health-check:
+    name: Test live production MCP server
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-test.txt
+
+      - name: Run integration tests against prod
+        env:
+          MCP_SERVER_URL: https://catchall-mcp.newscatcherapi.com/mcp
+          CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
+        run: |
+          pytest tests/integration/ -v -s
+
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.27.0
+        with:
+          payload: |
+            {
+              "text": ":red_circle: *Prod MCP Health Check FAILED*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
