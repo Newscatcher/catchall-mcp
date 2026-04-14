@@ -1,0 +1,6 @@
+fastmcp
+httpx
+pytest
+pytest-asyncio
+anyio
+mcp
