@@ -115,9 +115,10 @@ class TestMonitorWriteToolsWithFakeId:
         assert text.startswith("Error:")
 
     async def test_update_unknown_monitor_returns_error(self, mcp):
+        # v1.5.3: monitors take centralized webhook_ids (no inline webhook config).
         result = await mcp.call_tool(
             "update_monitor",
-            {"monitor_id": self.FAKE_ID, "webhook_url": "https://example.com/hook"},
+            {"monitor_id": self.FAKE_ID, "webhook_ids": [self.FAKE_ID]},
         )
         text = call_result_text(result)
         assert text.startswith("Error:")
@@ -130,15 +131,13 @@ class TestMonitorWriteToolsWithFakeId:
         assert text.startswith("Error:")
         assert "limit" in text.lower()
 
-    async def test_update_monitor_invalid_webhook_method_returns_error(self, mcp):
-        result = await mcp.call_tool(
-            "update_monitor",
-            {
-                "monitor_id": self.FAKE_ID,
-                "webhook_url": "https://example.com/hook",
-                "webhook_method": "DELETE",
-            },
-        )
+    async def test_delete_unknown_monitor_returns_error(self, mcp):
+        result = await mcp.call_tool("delete_monitor", {"monitor_id": self.FAKE_ID})
+        text = call_result_text(result)
+        assert text.startswith("Error:")
+
+    async def test_get_status_unknown_monitor_returns_error(self, mcp):
+        result = await mcp.call_tool("get_monitor_status", {"monitor_id": self.FAKE_ID})
         text = call_result_text(result)
         assert text.startswith("Error:")
 
@@ -165,20 +164,6 @@ class TestMonitorWriteToolsWithFakeId:
         text = call_result_text(result)
         assert text.startswith("Error:")
         assert "limit" in text.lower()
-
-    async def test_create_monitor_invalid_webhook_config_returns_error(self, mcp):
-        result = await mcp.call_tool(
-            "create_monitor",
-            {
-                "reference_job_id": self.FAKE_ID,
-                "schedule": "every day at 9 AM UTC",
-                "webhook_headers": {"Authorization": "Bearer token"},
-                # webhook_url missing — should be caught by local validation
-            },
-        )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
-        assert "webhook_url" in text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -232,12 +217,12 @@ class TestMonitorLifecycle:
         enable_text = call_result_text(enable)
         assert not enable_text.startswith("Error:"), f"Enable failed: {enable_text}"
 
-        # 6. Update webhook
+        # 6. Update per-run limit (webhooks are now assigned via webhook_ids)
         update = await mcp.call_tool(
             "update_monitor",
             {
                 "monitor_id": monitor_id,
-                "webhook_url": "https://example.com/test-hook",
+                "limit": 15,
             },
         )
         update_data = call_result_json(update)

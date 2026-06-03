@@ -9,6 +9,31 @@ from typing_extensions import TypedDict
 
 ENRICHMENT_TYPES = {"text", "number", "date", "option", "url", "company"}
 
+# Enum value sets from the v1.5.3 / live API OpenAPI spec.
+WEBHOOK_TYPES = {"generic", "slack", "teams", "custom"}
+DELIVERY_MODES = {"full", "per_record"}
+HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+WEBHOOK_AUTH_TYPES = {"bearer", "api_key", "basic"}
+# Resource types a webhook can be mapped to (MappableResourceType).
+MAPPABLE_RESOURCE_TYPES = {"job", "monitor", "monitor_group"}
+# Resource types a project can contain (ProjectResourceTypeEnum).
+PROJECT_RESOURCE_TYPES = {"job", "monitor", "dataset", "monitor_group"}
+OWNERSHIP_VALUES = {"all", "own", "shared"}
+SORT_ORDERS = {"asc", "desc"}
+DATASET_STATUSES = {"pending", "enriching", "ready", "failed"}
+DATASET_SORT_BY = {"name", "created_at", "status"}
+ENTITY_STATUSES = {"pending", "enriching", "ready", "failed"}
+ENTITY_TYPES = {"company", "person"}
+ENTITY_SORT_BY = {"created_at", "name", "status"}
+
+
+def validate_choice(value: str, allowed: set[str], field_name: str) -> str:
+    """Validate that a string value is one of an allowed set."""
+    if value not in allowed:
+        options = ", ".join(sorted(allowed))
+        raise ValueError(f"{field_name} must be one of: {options}.")
+    return value
+
 
 class ValidatorDefinition(TypedDict):
     """Schema for a custom validator."""
@@ -152,56 +177,38 @@ def validate_mode(mode: str) -> str:
     return mode
 
 
-def validate_webhook_method(webhook_method: str) -> str:
-    """Validate webhook HTTP method."""
-    normalized = webhook_method.upper()
-    if normalized not in {"POST", "PUT"}:
-        raise ValueError("webhook_method must be 'POST' or 'PUT'.")
-    return normalized
+def validate_http_method(method: str) -> str:
+    """Validate and normalize a webhook delivery HTTP method."""
+    normalized = method.upper()
+    return validate_choice(normalized, HTTP_METHODS, "method")
 
 
-def validate_webhook_auth(webhook_auth: list[str] | None) -> None:
-    """Validate webhook basic auth tuple."""
-    if webhook_auth is None:
-        return
-    if len(webhook_auth) != 2:
-        raise ValueError("webhook_auth must contain exactly two values: [username, password].")
-    if not all(isinstance(item, str) and item for item in webhook_auth):
-        raise ValueError("webhook_auth values must be non-empty strings.")
+def validate_webhook_auth(auth: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Validate a webhook auth object (bearer / api_key / basic).
 
-
-def build_webhook_payload(
-    webhook_url: str,
-    webhook_method: str,
-    webhook_headers: dict[str, str] | None,
-    webhook_params: dict[str, str] | None,
-    webhook_auth: list[str] | None,
-) -> dict[str, Any] | None:
-    """Build and validate optional webhook payload."""
-    has_webhook_extras = (
-        webhook_headers is not None
-        or webhook_params is not None
-        or webhook_auth is not None
-        or webhook_method.upper() != "POST"
-    )
-
-    if not webhook_url:
-        if has_webhook_extras:
-            raise ValueError(
-                "webhook_url is required when providing webhook_method, "
-                "webhook_headers, webhook_params, or webhook_auth."
-            )
+    Matches the API's auth schema:
+    - bearer:  {"type": "bearer",  "token": "..."}
+    - api_key: {"type": "api_key", "header": "X-API-Key", "value": "..."}
+    - basic:   {"type": "basic",   "username": "...", "password": "..."}
+    """
+    if auth is None:
         return None
+    if not isinstance(auth, dict):
+        raise ValueError("auth must be an object with a 'type' field.")
 
-    normalized_method = validate_webhook_method(webhook_method)
-    validate_webhook_auth(webhook_auth)
+    auth_type = auth.get("type")
+    if auth_type not in WEBHOOK_AUTH_TYPES:
+        options = ", ".join(sorted(WEBHOOK_AUTH_TYPES))
+        raise ValueError(f"auth.type must be one of: {options}.")
 
-    webhook: dict[str, Any] = {"url": webhook_url, "method": normalized_method}
-    if webhook_headers:
-        webhook["headers"] = webhook_headers
-    if webhook_params:
-        webhook["params"] = webhook_params
-    if webhook_auth:
-        webhook["auth"] = webhook_auth
+    required_by_type = {
+        "bearer": ["token"],
+        "api_key": ["header", "value"],
+        "basic": ["username", "password"],
+    }
+    for field in required_by_type[auth_type]:
+        value = auth.get(field)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"auth of type '{auth_type}' requires a non-empty '{field}'.")
 
-    return webhook
+    return auth

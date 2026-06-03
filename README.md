@@ -4,21 +4,96 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 
 ## Tool To Endpoint Mapping
 
+This server is fully synced with CatchAll API v1.5.3 — every endpoint has a tool.
+
+### Jobs
+
 | MCP Tool | Method | Endpoint |
 | --- | --- | --- |
 | `initialize_query` | `POST` | `/catchAll/initialize` |
 | `submit_query` | `POST` | `/catchAll/submit` |
+| `validate_query` | `POST` | `/catchAll/validate` |
 | `continue_job` | `POST` | `/catchAll/continue` |
 | `list_user_jobs` | `GET` | `/catchAll/jobs/user` |
 | `get_job_status` | `GET` | `/catchAll/status/{job_id}` |
 | `pull_results` | `GET` | `/catchAll/pull/{job_id}` |
+| `delete_job` | `DELETE` | `/catchAll/jobs/{job_id}` |
+
+### Monitors
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
 | `create_monitor` | `POST` | `/catchAll/monitors/create` |
 | `update_monitor` | `PATCH` | `/catchAll/monitors/{monitor_id}` |
-| `list_monitors` | `GET` | `/catchAll/monitors` |
+| `delete_monitor` | `DELETE` | `/catchAll/monitors/{monitor_id}` |
+| `list_monitors` | `GET` | `/catchAll/monitors/` |
 | `list_monitor_jobs` | `GET` | `/catchAll/monitors/{monitor_id}/jobs` |
+| `get_monitor_status` | `GET` | `/catchAll/monitors/{monitor_id}/status` |
 | `pull_monitor_results` | `GET` | `/catchAll/monitors/pull/{monitor_id}` |
 | `enable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/enable` |
 | `disable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/disable` |
+
+### Webhooks
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
+| `list_webhooks` | `GET` | `/catchAll/webhooks` |
+| `create_webhook` | `POST` | `/catchAll/webhooks` |
+| `get_webhook` | `GET` | `/catchAll/webhooks/{webhook_id}` |
+| `update_webhook` | `PATCH` | `/catchAll/webhooks/{webhook_id}` |
+| `delete_webhook` | `DELETE` | `/catchAll/webhooks/{webhook_id}` |
+| `test_webhook` | `POST` | `/catchAll/webhooks/{webhook_id}/test` |
+| `assign_webhook_resource` | `POST` | `/catchAll/webhooks/{webhook_id}/resources` |
+| `list_webhook_resources` | `GET` | `/catchAll/webhooks/{webhook_id}/resources` |
+| `remove_webhook_resource` | `DELETE` | `/catchAll/webhooks/{webhook_id}/resources/{resource_type}/{resource_id}` |
+| `list_resource_webhooks` | `GET` | `/catchAll/resources/{resource_type}/{resource_id}/webhooks` |
+| `get_webhook_history` | `GET` | `/catchAll/webhook-history` |
+
+### Projects
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
+| `create_project` | `POST` | `/catchAll/projects/` |
+| `list_projects` | `GET` | `/catchAll/projects/` |
+| `get_project` | `GET` | `/catchAll/projects/{project_id}` |
+| `update_project` | `PATCH` | `/catchAll/projects/{project_id}` |
+| `delete_project` | `DELETE` | `/catchAll/projects/{project_id}` |
+| `get_project_overview` | `GET` | `/catchAll/projects/{project_id}/overview` |
+| `add_project_resources` | `POST` | `/catchAll/projects/{project_id}/resources` |
+| `list_project_resources` | `GET` | `/catchAll/projects/{project_id}/resources` |
+| `remove_project_resource` | `DELETE` | `/catchAll/projects/{project_id}/resources/{resource_type}/{resource_id}` |
+
+### Datasets
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
+| `create_dataset` | `POST` | `/catchAll/datasets/` |
+| `list_datasets` | `GET` | `/catchAll/datasets/` |
+| `create_dataset_from_csv` | `POST` | `/catchAll/datasets/upload` |
+| `get_dataset` | `GET` | `/catchAll/datasets/{dataset_id}` |
+| `update_dataset` | `PATCH` | `/catchAll/datasets/{dataset_id}` |
+| `delete_dataset` | `DELETE` | `/catchAll/datasets/{dataset_id}` |
+| `add_dataset_entities` | `POST` | `/catchAll/datasets/{dataset_id}/entities` |
+| `remove_dataset_entities` | `DELETE` | `/catchAll/datasets/{dataset_id}/entities` |
+| `list_dataset_entities` | `POST` | `/catchAll/datasets/{dataset_id}/entities/list` |
+| `get_dataset_status` | `GET` | `/catchAll/datasets/{dataset_id}/status` |
+| `append_dataset_csv` | `POST` | `/catchAll/datasets/{dataset_id}/upload` |
+
+### Entities
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
+| `create_entity` | `POST` | `/catchAll/entities/` |
+| `list_entities` | `GET` | `/catchAll/entities/` |
+| `create_entities_batch` | `POST` | `/catchAll/entities/batch` |
+| `get_entity` | `GET` | `/catchAll/entities/{entity_id}` |
+| `update_entity` | `PATCH` | `/catchAll/entities/{entity_id}` |
+| `delete_entity` | `DELETE` | `/catchAll/entities/{entity_id}` |
+
+### User & Meta
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
 | `get_user_limits` | `POST` | `/catchAll/user/limits` |
 | `check_health` | `GET` | `/health` |
 | `get_version` | `GET` | `/version` |
@@ -92,10 +167,12 @@ claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mc
 - `create_monitor.backfill=true`: reference job `end_date` must be within the last 7 days.
 - `create_monitor.backfill=false`: reference job age constraint does not apply.
 - Monitor minimum schedule frequency depends on plan.
-- `create_monitor` supports optional `limit` (minimum `10`) and `backfill` (default `true`).
+- `create_monitor` supports optional `limit` (minimum `10`), `backfill` (default `true`), `timezone`, `webhook_ids`, and `project_id`.
+- Webhooks are centralized in v1.5.3: register them with `create_webhook`, then attach by ID via `create_monitor.webhook_ids` / `update_monitor.webhook_ids` (no inline webhook config).
+- Monitors are only supported for `base` jobs (not `lite`).
 - `enable_monitor` supports optional `backfill`.
-- `update_monitor` supports webhook updates and optional run `limit` updates.
-- `list_monitors` supports pagination via `page` and `page_size`, and returns `total`, `page`, `page_size`, `total_pages`, `monitors`.
+- `update_monitor` updates `webhook_ids` and/or run `limit` (pass `webhook_ids=[]` to clear assignments).
+- `list_monitors` supports pagination via `page` and `page_size` plus `search`, `ownership`, and `project_id` filters; it returns `total`, `page`, `page_size`, `total_pages`, `monitors`.
 
 ## Enrichment Output Notes
 
