@@ -373,57 +373,6 @@ async def make_api_request(
             return {}
 
 
-async def make_multipart_request(
-    api_key: str,
-    method: str,
-    path: str,
-    file_path: str,
-    form_fields: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Upload a file to the CatchAll API as multipart/form-data.
-
-    Reads `file_path` from local disk and sends it as the `file` form part. Used
-    by the dataset CSV upload endpoints, which take multipart bodies rather than JSON.
-    """
-    if not os.path.isfile(file_path):
-        raise ValueError(f"File not found: {file_path}")
-
-    key = get_api_key(api_key)
-    headers = {"Accept": "application/json", "x-api-key": key}
-
-    with open(file_path, "rb") as fh:
-        file_bytes = fh.read()
-    filename = os.path.basename(file_path) or "upload.csv"
-    files = {"file": (filename, file_bytes, "text/csv")}
-    data = {k: v for k, v in (form_fields or {}).items() if v is not None and v != ""}
-
-    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=120.0) as client:
-        response = await client.request(
-            method=method,
-            url=path,
-            headers=headers,
-            files=files,
-            data=data,
-        )
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-                if isinstance(error_data, dict) and "detail" in error_data:
-                    detail = error_data["detail"]
-                    error_msg = detail["detail"] if isinstance(detail, dict) and "detail" in detail else str(detail)
-                else:
-                    error_msg = json.dumps(error_data)
-            except Exception:
-                error_msg = response.text or f"HTTP {response.status_code}"
-            raise ValueError(f"API Error ({response.status_code}): {error_msg}")
-
-        try:
-            return response.json()
-        except json.JSONDecodeError:
-            return {}
-
-
 # ---------------------------------------------------------------------------
 # Job tools
 # ---------------------------------------------------------------------------
@@ -1881,53 +1830,6 @@ async def list_datasets(
 
 
 @mcp.tool()
-async def create_dataset_from_csv(
-    file_path: str,
-    name: str,
-    api_key: str = "",
-    description: str = "",
-) -> str:
-    """
-    Create a dataset by uploading a CSV file of entities.
-
-    Use when:
-    - You have a CSV of companies/people on local disk and want to turn it into a dataset.
-
-    CSV format: a header row with at least `name` and `domain` columns (rows
-    missing `domain` are skipped and reported in `validation_report.skipped_rows`).
-    Uploaded rows become standalone entities that persist even after the dataset
-    is deleted; delete them with `delete_entity` if you need to fully clean up.
-
-    Args:
-        file_path: Absolute path to a local CSV file (required). Read and uploaded as `file`.
-        name: Name for the new dataset (required).
-        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
-        description: Optional dataset description.
-
-    Returns:
-        JSON with `dataset_id`, `dataset_name`, `entities_created`, and a
-        `validation_report` (`total_rows`, `valid_rows`, `skipped_count`, `skipped_rows`).
-
-    Common API errors:
-        - 403: missing or invalid API key.
-        - 422: malformed CSV or input validation errors.
-    """
-    try:
-        result = await make_multipart_request(
-            api_key=api_key,
-            method="POST",
-            path="/catchAll/datasets/upload",
-            file_path=file_path,
-            form_fields={"name": name, "description": description},
-        )
-        return json.dumps(result, indent=2)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Unexpected error: {str(e)}"
-
-
-@mcp.tool()
 async def get_dataset(dataset_id: str, api_key: str = "") -> str:
     """
     Get a single dataset's details.
@@ -2183,42 +2085,6 @@ async def get_dataset_status(dataset_id: str, api_key: str = "") -> str:
             api_key=api_key,
             method="GET",
             path=f"/catchAll/datasets/{dataset_id}/status",
-        )
-        return json.dumps(result, indent=2)
-    except ValueError as e:
-        return f"Error: {str(e)}"
-    except Exception as e:
-        return f"Unexpected error: {str(e)}"
-
-
-@mcp.tool()
-async def append_dataset_csv(dataset_id: str, file_path: str, api_key: str = "") -> str:
-    """
-    Append entities from a CSV file to an existing dataset.
-
-    CSV format: a header row with at least `name` and `domain` columns (rows
-    missing `domain` are skipped and reported in `validation_report.skipped_rows`).
-
-    Args:
-        dataset_id: The dataset ID to append entities to.
-        file_path: Absolute path to a local CSV file (required).
-        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
-
-    Returns:
-        JSON with `dataset_id`, `entities_created`, and a `validation_report`
-        (`total_rows`, `valid_rows`, `skipped_count`, `skipped_rows`).
-
-    Common API errors:
-        - 403: missing or invalid API key.
-        - 404: dataset not found.
-        - 422: malformed CSV.
-    """
-    try:
-        result = await make_multipart_request(
-            api_key=api_key,
-            method="POST",
-            path=f"/catchAll/datasets/{dataset_id}/upload",
-            file_path=file_path,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:

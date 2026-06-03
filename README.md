@@ -4,7 +4,9 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 
 ## Tool To Endpoint Mapping
 
-This server is fully synced with CatchAll API v1.5.3 — every endpoint has a tool.
+This server is synced with CatchAll API v1.5.3 — every endpoint has a tool, except
+the two CSV file-upload endpoints, which are intentionally not exposed (see the note
+under Datasets below).
 
 ### Jobs
 
@@ -69,7 +71,6 @@ This server is fully synced with CatchAll API v1.5.3 — every endpoint has a to
 | --- | --- | --- |
 | `create_dataset` | `POST` | `/catchAll/datasets/` |
 | `list_datasets` | `GET` | `/catchAll/datasets/` |
-| `create_dataset_from_csv` | `POST` | `/catchAll/datasets/upload` |
 | `get_dataset` | `GET` | `/catchAll/datasets/{dataset_id}` |
 | `update_dataset` | `PATCH` | `/catchAll/datasets/{dataset_id}` |
 | `delete_dataset` | `DELETE` | `/catchAll/datasets/{dataset_id}` |
@@ -77,7 +78,13 @@ This server is fully synced with CatchAll API v1.5.3 — every endpoint has a to
 | `remove_dataset_entities` | `DELETE` | `/catchAll/datasets/{dataset_id}/entities` |
 | `list_dataset_entities` | `POST` | `/catchAll/datasets/{dataset_id}/entities/list` |
 | `get_dataset_status` | `GET` | `/catchAll/datasets/{dataset_id}/status` |
-| `append_dataset_csv` | `POST` | `/catchAll/datasets/{dataset_id}/upload` |
+
+> **Not exposed:** the CSV upload endpoints (`POST /catchAll/datasets/upload` and
+> `POST /catchAll/datasets/{dataset_id}/upload`) are intentionally omitted. They take an
+> uploaded file, which over a remote/hosted MCP would mean reading a file from the
+> **server's** filesystem — unsafe and not useful to remote callers. Add entities to a
+> dataset with `create_dataset(entity_ids=...)` / `add_dataset_entities` instead, after
+> creating them via `create_entity` / `create_entities_batch`.
 
 ### Entities
 

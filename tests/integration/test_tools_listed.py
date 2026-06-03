@@ -52,10 +52,10 @@ EXPECTED_TOOLS = {
     "add_project_resources",
     "list_project_resources",
     "remove_project_resource",
-    # Dataset tools
+    # Dataset tools (CSV upload endpoints are intentionally not exposed —
+    # they take a server-side file path, which is unsafe for a hosted server)
     "create_dataset",
     "list_datasets",
-    "create_dataset_from_csv",
     "get_dataset",
     "update_dataset",
     "delete_dataset",
@@ -63,7 +63,6 @@ EXPECTED_TOOLS = {
     "remove_dataset_entities",
     "list_dataset_entities",
     "get_dataset_status",
-    "append_dataset_csv",
     # Entity tools
     "create_entity",
     "list_entities",
