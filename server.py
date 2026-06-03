@@ -971,6 +971,282 @@ async def update_monitor(
         return f"Unexpected error: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# Webhook tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_webhooks(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+    """
+    List all your webhooks.
+
+    Use when:
+    - You want to see all webhook endpoints configured in your account.
+    - You need to find a webhook_id to pass to monitors (via webhook_ids) or jobs.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+
+    Returns:
+        JSON with total, page, page_size, total_pages, and a webhooks list.
+        Each item is a WebhookOutputData object: id, name, url, type, method,
+        delivery_mode, headers, params, formatter_config, is_active,
+        organization_id, created_by_user_id, created_at, updated_at.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/webhooks",
+            params={"page": page, "page_size": page_size},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def create_webhook(
+    name: str,
+    url: str,
+    api_key: str = "",
+    method: str = "POST",
+    headers: dict[str, str] | None = None,
+    auth: list[str] | None = None,
+    delivery_mode: str | None = None,
+    formatter_config: dict[str, Any] | None = None,
+) -> str:
+    """
+    Create a new webhook endpoint.
+
+    Use when:
+    - You want to register a URL to receive job or monitor result deliveries.
+    - You need a webhook_id to attach to a monitor (via webhook_ids) or a job submission.
+
+    Args:
+        name: Human-readable name for the webhook (required).
+        url: Target URL that will receive webhook deliveries (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        method: HTTP method for delivery: 'POST' (default) or 'PUT'.
+        headers: Optional dict of custom HTTP headers to include in deliveries.
+        auth: Optional basic auth as [username, password].
+        delivery_mode: Optional delivery mode: 'full' (default) or 'per_record'.
+        formatter_config: Optional formatter configuration dict.
+
+    Returns:
+        JSON with `success`, `message`, and a `webhook` object — the new id is at
+        `webhook.id` (NOT at the top level). The webhook object is a
+        WebhookOutputData: id, name, url, type, delivery_mode, method, headers,
+        params, formatter_config, is_active, organization_id, created_by_user_id,
+        created_at, updated_at.
+
+    Common API errors:
+        - 400: bad request or invalid parameters.
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"name": name, "url": url, "method": method}
+        if headers is not None:
+            body["headers"] = headers
+        if auth is not None:
+            body["auth"] = auth
+        if delivery_mode is not None:
+            body["delivery_mode"] = delivery_mode
+        if formatter_config is not None:
+            body["formatter_config"] = formatter_config
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/webhooks",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_webhook(webhook_id: str, api_key: str = "") -> str:
+    """
+    Retrieve the full configuration of a specific webhook.
+
+    Use when:
+    - You want to inspect a webhook's URL, method, headers, or status by its ID.
+
+    Args:
+        webhook_id: The webhook ID to retrieve.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, and a `webhook` object (the full
+        WebhookOutputData: id, name, url, type, delivery_mode, method, headers,
+        params, formatter_config, is_active, organization_id, created_by_user_id,
+        created_at, updated_at).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/webhooks/{webhook_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_webhook(
+    webhook_id: str,
+    api_key: str = "",
+    name: str | None = None,
+    url: str | None = None,
+    method: str | None = None,
+    headers: dict[str, str] | None = None,
+    auth: list[str] | None = None,
+    delivery_mode: str | None = None,
+    formatter_config: dict[str, Any] | None = None,
+) -> str:
+    """
+    Update an existing webhook's configuration.
+
+    Use when:
+    - You want to change a webhook's URL, method, headers, or other settings.
+    - Only the fields you provide are updated; omitted fields remain unchanged.
+
+    Args:
+        webhook_id: The webhook ID to update.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        name: Updated webhook name.
+        url: Updated target URL.
+        method: Updated HTTP method: 'POST' or 'PUT'.
+        headers: Updated dict of custom HTTP headers.
+        auth: Updated basic auth as [username, password].
+        delivery_mode: Updated delivery mode: 'full' or 'per_record'.
+        formatter_config: Updated formatter configuration dict.
+
+    Returns:
+        JSON with `success`, `message`, and the updated `webhook` object
+        (a WebhookOutputData; see get_webhook for its fields).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if url is not None:
+            body["url"] = url
+        if method is not None:
+            body["method"] = method
+        if headers is not None:
+            body["headers"] = headers
+        if auth is not None:
+            body["auth"] = auth
+        if delivery_mode is not None:
+            body["delivery_mode"] = delivery_mode
+        if formatter_config is not None:
+            body["formatter_config"] = formatter_config
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/webhooks/{webhook_id}",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_webhook(webhook_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete a webhook endpoint.
+
+    Use when:
+    - You want to remove a webhook from your account.
+
+    Args:
+        webhook_id: The webhook ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON. On success the API returns an empty object `{}` with HTTP 200
+        (there is no success/webhook_id/message body). A missing webhook
+        returns 404, surfaced here as an error string.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/webhooks/{webhook_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def test_webhook(webhook_id: str, api_key: str = "") -> str:
+    """
+    Send a test delivery to a webhook endpoint.
+
+    Use when:
+    - You want to verify a webhook URL is reachable and correctly configured
+      before attaching it to a monitor or job.
+
+    Args:
+        webhook_id: The webhook ID to test.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, `http_status_code` (the status the
+        target URL returned to the test delivery), and `response_body`. If the
+        target returns a non-2xx status the call is reported as an error string
+        that includes that upstream status.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/webhooks/{webhook_id}/test",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
 @mcp.tool()
 async def get_user_limits(api_key: str = "") -> str:
     """
