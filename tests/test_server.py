@@ -268,45 +268,38 @@ class ValidationHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validators.validate_monitor_limit(9)
 
-    def test_validate_webhook_method_and_auth(self) -> None:
-        self.assertEqual(validators.validate_webhook_method("post"), "POST")
-        self.assertEqual(validators.validate_webhook_method("PUT"), "PUT")
+    def test_validate_http_method(self) -> None:
+        # v1.5.3: webhook delivery accepts the full HttpMethod enum (the live API
+        # even has a GET webhook), not just POST/PUT.
+        self.assertEqual(validators.validate_http_method("post"), "POST")
+        self.assertEqual(validators.validate_http_method("PUT"), "PUT")
+        self.assertEqual(validators.validate_http_method("get"), "GET")
+        self.assertEqual(validators.validate_http_method("patch"), "PATCH")
         with self.assertRaises(ValueError):
-            validators.validate_webhook_method("PATCH")
+            validators.validate_http_method("TRACE")
 
-        validators.validate_webhook_auth(["user", "pass"])
+    def test_validate_choice(self) -> None:
+        self.assertEqual(validators.validate_choice("job", validators.MAPPABLE_RESOURCE_TYPES, "rt"), "job")
+        self.assertEqual(validators.validate_choice("dataset", validators.PROJECT_RESOURCE_TYPES, "rt"), "dataset")
+        self.assertEqual(validators.validate_choice("own", validators.OWNERSHIP_VALUES, "ownership"), "own")
         with self.assertRaises(ValueError):
-            validators.validate_webhook_auth(["user"])
-        with self.assertRaises(ValueError):
-            validators.validate_webhook_auth(["user", ""])
+            validators.validate_choice("nope", validators.WEBHOOK_TYPES, "type")
 
-    def test_build_webhook_payload_requires_url_for_extras(self) -> None:
+    def test_validate_webhook_auth_object(self) -> None:
+        # v1.5.3 auth is an object (bearer / api_key / basic), not a [user, pass] list.
+        bearer = {"type": "bearer", "token": "abc"}
+        self.assertEqual(validators.validate_webhook_auth(bearer), bearer)
+        api_key = {"type": "api_key", "header": "X-API-Key", "value": "k"}
+        self.assertEqual(validators.validate_webhook_auth(api_key), api_key)
+        basic = {"type": "basic", "username": "u", "password": "p"}
+        self.assertEqual(validators.validate_webhook_auth(basic), basic)
+        self.assertIsNone(validators.validate_webhook_auth(None))
         with self.assertRaises(ValueError):
-            validators.build_webhook_payload(
-                webhook_url="",
-                webhook_method="POST",
-                webhook_headers={"x-test": "1"},
-                webhook_params=None,
-                webhook_auth=None,
-            )
-
-        webhook = validators.build_webhook_payload(
-            webhook_url="https://example.com/hook",
-            webhook_method="put",
-            webhook_headers={"Authorization": "Bearer token"},
-            webhook_params={"team": "qa"},
-            webhook_auth=["user", "pass"],
-        )
-        self.assertEqual(
-            webhook,
-            {
-                "url": "https://example.com/hook",
-                "method": "PUT",
-                "headers": {"Authorization": "Bearer token"},
-                "params": {"team": "qa"},
-                "auth": ["user", "pass"],
-            },
-        )
+            validators.validate_webhook_auth({"type": "oauth", "token": "x"})
+        with self.assertRaises(ValueError):
+            validators.validate_webhook_auth({"type": "bearer"})  # missing token
+        with self.assertRaises(ValueError):
+            validators.validate_webhook_auth({"type": "basic", "username": "u"})  # missing password
 
     def test_validate_validator_definitions(self) -> None:
         normalized = validators.validate_validator_definitions(
@@ -477,7 +470,7 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 server.list_monitors,
                 {},
                 "GET",
-                "/catchAll/monitors",
+                "/catchAll/monitors/",
                 None,
                 {"page": 1, "page_size": 100},
                 True,
@@ -529,10 +522,19 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
             ),
             (
                 server.update_monitor,
-                {"monitor_id": "mon-1", "webhook_url": "https://example.com/webhook"},
+                {"monitor_id": "mon-1", "webhook_ids": ["wh-1", "wh-2"]},
                 "PATCH",
                 "/catchAll/monitors/mon-1",
-                {"webhook": {"url": "https://example.com/webhook", "method": "POST"}},
+                {"webhook_ids": ["wh-1", "wh-2"]},
+                None,
+                True,
+            ),
+            (
+                server.update_monitor,
+                {"monitor_id": "mon-1", "webhook_ids": []},
+                "PATCH",
+                "/catchAll/monitors/mon-1",
+                {"webhook_ids": []},
                 None,
                 True,
             ),
@@ -542,6 +544,109 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 "PATCH",
                 "/catchAll/monitors/mon-1",
                 {"limit": 10},
+                None,
+                True,
+            ),
+            (
+                server.create_monitor,
+                {"reference_job_id": "job-1", "schedule": "every day at 9 AM EST",
+                 "timezone": "America/New_York", "webhook_ids": ["wh-1"], "backfill": False},
+                "POST",
+                "/catchAll/monitors/create",
+                {"reference_job_id": "job-1", "schedule": "every day at 9 AM EST",
+                 "backfill": False, "timezone": "America/New_York", "webhook_ids": ["wh-1"]},
+                None,
+                True,
+            ),
+            (
+                server.delete_job,
+                {"job_id": "job-1"},
+                "DELETE",
+                "/catchAll/jobs/job-1",
+                None,
+                None,
+                True,
+            ),
+            (
+                server.validate_query,
+                {"query": "tesla layoffs 2024"},
+                "POST",
+                "/catchAll/validate",
+                {"query": "tesla layoffs 2024"},
+                None,
+                True,
+            ),
+            (
+                server.delete_monitor,
+                {"monitor_id": "mon-1"},
+                "DELETE",
+                "/catchAll/monitors/mon-1",
+                None,
+                None,
+                True,
+            ),
+            (
+                server.get_monitor_status,
+                {"monitor_id": "mon-1"},
+                "GET",
+                "/catchAll/monitors/mon-1/status",
+                None,
+                None,
+                True,
+            ),
+            (
+                server.create_project,
+                {"name": "Acme"},
+                "POST",
+                "/catchAll/projects/",
+                {"name": "Acme"},
+                None,
+                True,
+            ),
+            (
+                server.create_webhook,
+                {"name": "wh", "url": "https://example.com/h", "type": "slack",
+                 "delivery_mode": "per_record"},
+                "POST",
+                "/catchAll/webhooks",
+                {"name": "wh", "url": "https://example.com/h", "method": "POST",
+                 "type": "slack", "delivery_mode": "per_record"},
+                None,
+                True,
+            ),
+            (
+                server.assign_webhook_resource,
+                {"webhook_id": "wh-1", "resource_type": "job", "resource_id": "job-1"},
+                "POST",
+                "/catchAll/webhooks/wh-1/resources",
+                {"resource_type": "job", "resource_id": "job-1"},
+                None,
+                True,
+            ),
+            (
+                server.create_entity,
+                {"name": "Stripe", "entity_type": "company"},
+                "POST",
+                "/catchAll/entities/",
+                {"name": "Stripe", "entity_type": "company"},
+                None,
+                True,
+            ),
+            (
+                server.create_dataset,
+                {"name": "ds"},
+                "POST",
+                "/catchAll/datasets/",
+                {"name": "ds"},
+                None,
+                True,
+            ),
+            (
+                server.add_dataset_entities,
+                {"dataset_id": "ds-1", "entity_ids": ["e1", "e2"]},
+                "POST",
+                "/catchAll/datasets/ds-1/entities",
+                {"entity_ids": ["e1", "e2"]},
                 None,
                 True,
             ),
@@ -692,38 +797,34 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "reference_job_id": "job-1",
                     "schedule": "every day at 9 AM UTC",
-                    "webhook_headers": {"Authorization": "Bearer token"},
-                },
-                "webhook_url is required when providing webhook_method, webhook_headers, webhook_params, or webhook_auth.",
-            ),
-            (
-                server.create_monitor,
-                {
-                    "reference_job_id": "job-1",
-                    "schedule": "every day at 9 AM UTC",
-                    "webhook_url": "https://example.com",
-                    "webhook_method": "PATCH",
-                },
-                "webhook_method must be 'POST' or 'PUT'.",
-            ),
-            (
-                server.create_monitor,
-                {
-                    "reference_job_id": "job-1",
-                    "schedule": "every day at 9 AM UTC",
-                    "webhook_url": "https://example.com",
-                    "webhook_auth": ["only-user"],
-                },
-                "webhook_auth must contain exactly two values: [username, password].",
-            ),
-            (
-                server.create_monitor,
-                {
-                    "reference_job_id": "job-1",
-                    "schedule": "every day at 9 AM UTC",
                     "limit": 9,
                 },
                 "limit must be >= 10.",
+            ),
+            (
+                server.create_webhook,
+                {"name": "wh", "url": "https://example.com/h", "type": "carrier-pigeon"},
+                "type must be one of: custom, generic, slack, teams.",
+            ),
+            (
+                server.create_webhook,
+                {"name": "wh", "url": "https://example.com/h", "method": "TRACE"},
+                "method must be one of: DELETE, GET, PATCH, POST, PUT.",
+            ),
+            (
+                server.assign_webhook_resource,
+                {"webhook_id": "wh-1", "resource_type": "widget", "resource_id": "r-1"},
+                "resource_type must be one of: job, monitor, monitor_group.",
+            ),
+            (
+                server.add_project_resources,
+                {"project_id": "p-1", "resources": [{"resource_type": "widget", "resource_id": "r-1"}]},
+                "resources[0].resource_type must be one of: dataset, job, monitor, monitor_group.",
+            ),
+            (
+                server.list_user_jobs,
+                {"ownership": "everyone"},
+                "ownership must be one of: all, own, shared.",
             ),
             (
                 server.update_monitor,
@@ -766,11 +867,6 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     "enrichments": '{"name":"not-array"}',
                 },
                 "enrichments must be a JSON array when provided.",
-            ),
-            (
-                server.update_monitor,
-                {"monitor_id": "mon-1", "webhook_params": {"k": "v"}},
-                "webhook_url is required when providing webhook_method, webhook_headers, webhook_params, or webhook_auth.",
             ),
             (
                 server.submit_query,

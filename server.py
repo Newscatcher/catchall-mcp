@@ -23,17 +23,30 @@ from fastmcp import FastMCP
 from fastmcp.server.http import _current_http_request
 from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
+    DATASET_SORT_BY,
+    DATASET_STATUSES,
+    DELIVERY_MODES,
+    ENTITY_SORT_BY,
+    ENTITY_STATUSES,
+    ENTITY_TYPES,
+    MAPPABLE_RESOURCE_TYPES,
+    OWNERSHIP_VALUES,
+    PROJECT_RESOURCE_TYPES,
+    SORT_ORDERS,
+    WEBHOOK_TYPES,
     EnrichmentDefinition,
     ValidatorDefinition,
-    build_webhook_payload,
     coerce_definition_list,
+    validate_choice,
     validate_enrichment_definitions,
+    validate_http_method,
     validate_mode,
     validate_monitor_limit,
     validate_new_limit,
     validate_page_params,
     validate_sort,
     validate_validator_definitions,
+    validate_webhook_auth,
 )
 
 # Context variable to store the API key for the current request
@@ -376,6 +389,11 @@ async def submit_query(
     validators: list[ValidatorDefinition] | str | None = None,
     enrichments: list[EnrichmentDefinition] | str | None = None,
     mode: str = "",
+    project_id: str = "",
+    webhook_ids: list[str] | None = None,
+    schema: str = "",
+    connected_dataset_ids: list[str] | None = None,
+    ed_score_min: int | None = None,
 ) -> str:
     """
     Create a new CatchAll processing job from a natural-language query.
@@ -423,6 +441,15 @@ async def submit_query(
         enrichments: Optional custom enrichments (`name`, `description`, `type`), as array or JSON-string array.
         mode: Optional job processing mode: `"lite"` (faster, lower cost, less detail) or `"base"` (default,
             full extraction). If omitted, the API defaults to `"base"`.
+        project_id: Optional project ID to associate this job with.
+        webhook_ids: Optional list of webhook IDs to notify when the job completes (max 5 per job).
+            Use `list_webhooks` / `create_webhook` to get IDs.
+        schema: Optional advanced custom JSON schema string that overrides the default extraction
+            schema. Use `initialize_query` to discover a suitable schema.
+        connected_dataset_ids: Optional list of dataset IDs whose entities narrow the retrieval scope.
+            When set, `ed_score_min` defaults to 2 if not provided.
+        ed_score_min: Optional minimum entity-domain relevance score (1-10). Only relevant when
+            `connected_dataset_ids` is set.
 
     Returns:
         JSON string with `{"job_id":"<uuid>"}`.
@@ -455,6 +482,16 @@ async def submit_query(
             body["enrichments"] = normalized_enrichments
         if mode:
             body["mode"] = mode
+        if project_id:
+            body["project_id"] = project_id
+        if webhook_ids:
+            body["webhook_ids"] = webhook_ids
+        if schema:
+            body["schema"] = schema
+        if connected_dataset_ids:
+            body["connected_dataset_ids"] = connected_dataset_ids
+        if ed_score_min is not None:
+            body["ed_score_min"] = ed_score_min
 
         result = await make_api_request(
             api_key=api_key,
@@ -660,7 +697,14 @@ async def continue_job(job_id: str, new_limit: int | None = None, api_key: str =
 
 
 @mcp.tool()
-async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+async def list_user_jobs(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    ownership: str = "",
+    project_id: str = "",
+) -> str:
     """
     List all jobs submitted by you.
 
@@ -670,6 +714,9 @@ async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100)
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1)
         page_size: Number of results per page (default: 100, max: 1000)
+        search: Optional text filter on the job query.
+        ownership: Optional ownership filter: 'all', 'own', or 'shared'.
+        project_id: Optional filter to jobs belonging to a specific project.
 
     Returns:
         JSON with list of your submitted jobs. Each job includes `mode`
@@ -677,11 +724,100 @@ async def list_user_jobs(api_key: str = "", page: int = 1, page_size: int = 100)
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            params["search"] = search
+        if ownership:
+            params["ownership"] = validate_choice(ownership, OWNERSHIP_VALUES, "ownership")
+        if project_id:
+            params["project_id"] = project_id
         result = await make_api_request(
             api_key=api_key,
             method="GET",
             path="/catchAll/jobs/user",
-            params={"page": page, "page_size": page_size},
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_job(job_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete a job and its results.
+
+    Use when:
+    - You want to remove a job you no longer need from your account.
+
+    Args:
+        job_id: The job ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, and `job_id`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: job not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/jobs/{job_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def validate_query(query: str, api_key: str = "", context: str = "") -> str:
+    """
+    Check the quality of a query before submitting a job ("Check Query Quality").
+
+    Use when:
+    - You want quick feedback on whether a query is well-formed for CatchAll
+      before spending credits on a job.
+    - You want concrete suggestions to improve a vague or overly broad query.
+
+    Do not use when:
+    - You want to preview auto-generated validators/enrichments (use `initialize_query`).
+    - You want to actually run a search (use `submit_query`).
+
+    Args:
+        query: The natural-language query to assess (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        context: Optional extra context that sharpens the assessment.
+
+    Returns:
+        JSON with:
+        - `status`: overall quality — one of `critical`, `needs_work`, `good`.
+        - `title`: brief assessment headline.
+        - `description`: 2-3 sentence assessment.
+        - `issues`: list of issue codes (for example `too_vague`, `too_short`,
+          `missing_event_type`, `wrong_timeframe`).
+        - `suggestions`: list of `{issue, message, example}` improvement tips.
+        - `confidence`: number — confidence in the assessment.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"query": query}
+        if context:
+            body["context"] = context
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/validate",
+            json_data=body,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -700,13 +836,11 @@ async def create_monitor(
     reference_job_id: str,
     schedule: str,
     api_key: str = "",
+    timezone: str = "",
+    webhook_ids: list[str] | None = None,
     limit: int | None = None,
     backfill: bool = True,
-    webhook_url: str = "",
-    webhook_method: str = "POST",
-    webhook_headers: dict[str, str] | None = None,
-    webhook_params: dict[str, str] | None = None,
-    webhook_auth: list[str] | None = None,
+    project_id: str = "",
 ) -> str:
     """
     Create a recurring monitor from a completed job.
@@ -715,25 +849,28 @@ async def create_monitor(
     pattern: submit a job, refine until results match, then create a monitor.
 
     The schedule is defined in natural language (e.g., 'every day at 9 AM EST').
-    Always include a timezone. API-enforced constraints apply:
+    Always include a timezone (in the schedule text or via the `timezone` arg).
+    API-enforced constraints apply:
     - If `backfill=true`, reference job end_date must be within the last 7 days
     - If `backfill=false`, reference job age does not matter
     - Minimum schedule frequency depends on your plan
+
+    Webhooks are now centralized: register them with `create_webhook`, then pass
+    their IDs here via `webhook_ids` (there is no inline webhook config anymore).
 
     Args:
         reference_job_id: ID of a completed job to use as the template
         schedule: Natural language schedule (e.g., 'every day at 9 AM EST', 'every Monday at 8 AM UTC', 'every 48 hours')
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        timezone: Optional IANA timezone for the schedule (e.g. 'America/New_York').
+            Defaults to UTC. A timezone written into the schedule text overrides this.
+        webhook_ids: Optional list of webhook IDs to notify on each run completion (max 5).
         limit: Optional max records per run (minimum 10). If omitted, API uses plan default.
         backfill: Optional gap-fill toggle before first run (default true).
-        webhook_url: Optional webhook URL to receive results on each run
-        webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
-        webhook_headers: Optional dict of custom HTTP headers for the webhook
-        webhook_params: Optional dict of query string parameters for the webhook
-        webhook_auth: Optional basic auth as [username, password]
+        project_id: Optional project ID to associate this monitor with.
 
     Returns:
-        JSON with monitor_id and status
+        JSON with monitor_id and status.
     """
     try:
         body: dict[str, Any] = {
@@ -741,19 +878,15 @@ async def create_monitor(
             "schedule": schedule,
             "backfill": backfill,
         }
+        if timezone:
+            body["timezone"] = timezone
+        if webhook_ids:
+            body["webhook_ids"] = webhook_ids
         if limit is not None:
             validate_monitor_limit(limit)
             body["limit"] = limit
-
-        webhook = build_webhook_payload(
-            webhook_url=webhook_url,
-            webhook_method=webhook_method,
-            webhook_headers=webhook_headers,
-            webhook_params=webhook_params,
-            webhook_auth=webhook_auth,
-        )
-        if webhook:
-            body["webhook"] = webhook
+        if project_id:
+            body["project_id"] = project_id
 
         result = await make_api_request(
             api_key=api_key,
@@ -769,7 +902,14 @@ async def create_monitor(
 
 
 @mcp.tool()
-async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+async def list_monitors(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    ownership: str = "",
+    project_id: str = "",
+) -> str:
     """
     List all your monitors.
 
@@ -779,6 +919,9 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 100, max: 1000).
+        search: Optional text filter on the monitor query.
+        ownership: Optional ownership filter: 'all', 'own', or 'shared'.
+        project_id: Optional filter to monitors belonging to a specific project.
 
     Returns:
         JSON with total, page, page_size, total_pages, and monitors.
@@ -786,11 +929,18 @@ async def list_monitors(api_key: str = "", page: int = 1, page_size: int = 100) 
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            params["search"] = search
+        if ownership:
+            params["ownership"] = validate_choice(ownership, OWNERSHIP_VALUES, "ownership")
+        if project_id:
+            params["project_id"] = project_id
         result = await make_api_request(
             api_key=api_key,
             method="GET",
             path="/catchAll/monitors/",
-            params={"page": page, "page_size": page_size},
+            params=params,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -917,52 +1067,1656 @@ async def enable_monitor(monitor_id: str, api_key: str = "", backfill: bool | No
 async def update_monitor(
     monitor_id: str,
     api_key: str = "",
+    webhook_ids: list[str] | None = None,
     limit: int | None = None,
-    webhook_url: str = "",
-    webhook_method: str = "POST",
-    webhook_headers: dict[str, str] | None = None,
-    webhook_params: dict[str, str] | None = None,
-    webhook_auth: list[str] | None = None,
 ) -> str:
     """
-    Update a monitor's webhook configuration and per-run limit.
+    Update a monitor's webhook assignments and per-run limit.
 
     Note: schedule and reference_job_id cannot be modified through this endpoint.
+    Webhooks are centralized — pass webhook IDs (from `create_webhook`/`list_webhooks`).
 
     Args:
         monitor_id: The monitor ID to update
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        webhook_ids: Optional list of webhook IDs to assign to this monitor.
+            Pass an empty list `[]` to clear all webhook assignments.
         limit: Optional updated maximum records per run (minimum 10).
-        webhook_url: New webhook URL
-        webhook_method: Webhook HTTP method: 'POST' (default) or 'PUT'
-        webhook_headers: Optional dict of custom HTTP headers for the webhook
-        webhook_params: Optional dict of query string parameters for the webhook
-        webhook_auth: Optional basic auth as [username, password]
 
     Returns:
-        JSON with monitor_id and status
+        JSON with monitor_id and status.
     """
     try:
         body: dict[str, Any] = {}
+        if webhook_ids is not None:
+            body["webhook_ids"] = webhook_ids
         if limit is not None:
             validate_monitor_limit(limit)
             body["limit"] = limit
-
-        webhook = build_webhook_payload(
-            webhook_url=webhook_url,
-            webhook_method=webhook_method,
-            webhook_headers=webhook_headers,
-            webhook_params=webhook_params,
-            webhook_auth=webhook_auth,
-        )
-        if webhook:
-            body["webhook"] = webhook
 
         result = await make_api_request(
             api_key=api_key,
             method="PATCH",
             path=f"/catchAll/monitors/{monitor_id}",
             json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_monitor(monitor_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete a monitor and stop its scheduled runs.
+
+    Use when:
+    - You want to remove a monitor entirely (use `disable_monitor` to only pause it).
+
+    Args:
+        monitor_id: The monitor ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, and `monitor_id`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: monitor not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/monitors/{monitor_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_monitor_status(monitor_id: str, api_key: str = "") -> str:
+    """
+    Get the status history of a monitor.
+
+    Use when:
+    - You want to see the timeline of a monitor's state changes (e.g. active,
+      disabled, errored) and any related details.
+
+    Args:
+        monitor_id: The monitor ID to inspect.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, `monitor_id`, `total_statuses`, and a
+        `statuses` list. Each status item has `id`, `status`, `created_at`, and
+        optional `additional_information`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: monitor not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/monitors/{monitor_id}/status",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Webhook tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_webhooks(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+    """
+    List all your webhooks.
+
+    Use when:
+    - You want to see all webhook endpoints configured in your account.
+    - You need to find a webhook_id to pass to monitors (via webhook_ids) or jobs.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+
+    Returns:
+        JSON with total, page, page_size, total_pages, and a webhooks list.
+        Each item is a WebhookOutputData object: id, name, url, type, method,
+        delivery_mode, headers, params, formatter_config, is_active,
+        organization_id, created_by_user_id, created_at, updated_at.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/webhooks",
+            params={"page": page, "page_size": page_size},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def create_webhook(
+    name: str,
+    url: str,
+    api_key: str = "",
+    type: str = "",
+    method: str = "POST",
+    delivery_mode: str | None = None,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+    auth: dict[str, Any] | None = None,
+    formatter_config: dict[str, Any] | None = None,
+) -> str:
+    """
+    Create a new webhook endpoint.
+
+    Use when:
+    - You want to register a URL to receive job or monitor result deliveries.
+    - You need a webhook_id to attach to a monitor (via webhook_ids) or a job submission.
+
+    Args:
+        name: Human-readable name for the webhook (required).
+        url: Target URL that will receive webhook deliveries (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        type: Optional webhook target type: 'generic' (default), 'slack', 'teams', or 'custom'.
+            'slack'/'teams' send pre-formatted payloads; 'generic'/'custom' send the raw result payload.
+        method: HTTP method for delivery (default 'POST'). One of GET, POST, PUT, PATCH, DELETE.
+        delivery_mode: Optional delivery mode: 'full' (default, whole result set in one call)
+            or 'per_record' (one call per article).
+        headers: Optional dict of custom HTTP headers to include in deliveries.
+        params: Optional dict of query string parameters appended to the webhook URL.
+        auth: Optional auth object forwarded with each delivery. One of:
+            - {"type": "bearer", "token": "..."}
+            - {"type": "api_key", "header": "X-API-Key", "value": "..."}
+            - {"type": "basic", "username": "...", "password": "..."}
+        formatter_config: Optional custom payload transformation config dict.
+
+    Returns:
+        JSON with `success`, `message`, and a `webhook` object — the new id is at
+        `webhook.id` (NOT at the top level). The webhook object is a
+        WebhookOutputData: id, name, url, type, delivery_mode, method, headers,
+        params, formatter_config, is_active, organization_id, created_by_user_id,
+        created_at, updated_at.
+
+    Common API errors:
+        - 400: bad request or invalid parameters.
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"name": name, "url": url, "method": validate_http_method(method)}
+        if type:
+            body["type"] = validate_choice(type, WEBHOOK_TYPES, "type")
+        if delivery_mode is not None:
+            body["delivery_mode"] = validate_choice(delivery_mode, DELIVERY_MODES, "delivery_mode")
+        if headers is not None:
+            body["headers"] = headers
+        if params is not None:
+            body["params"] = params
+        if auth is not None:
+            body["auth"] = validate_webhook_auth(auth)
+        if formatter_config is not None:
+            body["formatter_config"] = formatter_config
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/webhooks",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_webhook(webhook_id: str, api_key: str = "") -> str:
+    """
+    Retrieve the full configuration of a specific webhook.
+
+    Use when:
+    - You want to inspect a webhook's URL, method, headers, or status by its ID.
+
+    Args:
+        webhook_id: The webhook ID to retrieve.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, and a `webhook` object (the full
+        WebhookOutputData: id, name, url, type, delivery_mode, method, headers,
+        params, formatter_config, is_active, organization_id, created_by_user_id,
+        created_at, updated_at).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/webhooks/{webhook_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_webhook(
+    webhook_id: str,
+    api_key: str = "",
+    name: str | None = None,
+    url: str | None = None,
+    type: str | None = None,
+    method: str | None = None,
+    delivery_mode: str | None = None,
+    headers: dict[str, str] | None = None,
+    params: dict[str, str] | None = None,
+    auth: dict[str, Any] | None = None,
+    formatter_config: dict[str, Any] | None = None,
+    is_active: bool | None = None,
+) -> str:
+    """
+    Update an existing webhook's configuration.
+
+    Use when:
+    - You want to change a webhook's URL, method, headers, or other settings.
+    - You want to enable or disable a webhook (set `is_active`).
+    - Only the fields you provide are updated; omitted fields remain unchanged.
+
+    Args:
+        webhook_id: The webhook ID to update.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        name: Updated webhook name.
+        url: Updated target URL.
+        type: Updated webhook type: 'generic', 'slack', 'teams', or 'custom'.
+        method: Updated HTTP method: one of GET, POST, PUT, PATCH, DELETE.
+        delivery_mode: Updated delivery mode: 'full' or 'per_record'.
+        headers: Updated dict of custom HTTP headers.
+        params: Updated dict of query string parameters.
+        auth: Updated auth object. One of:
+            - {"type": "bearer", "token": "..."}
+            - {"type": "api_key", "header": "X-API-Key", "value": "..."}
+            - {"type": "basic", "username": "...", "password": "..."}
+        formatter_config: Updated formatter configuration dict.
+        is_active: Set to false to disable the webhook (stop deliveries), true to re-enable it.
+
+    Returns:
+        JSON with `success`, `message`, and the updated `webhook` object
+        (a WebhookOutputData; see get_webhook for its fields).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if url is not None:
+            body["url"] = url
+        if type is not None:
+            body["type"] = validate_choice(type, WEBHOOK_TYPES, "type")
+        if method is not None:
+            body["method"] = validate_http_method(method)
+        if delivery_mode is not None:
+            body["delivery_mode"] = validate_choice(delivery_mode, DELIVERY_MODES, "delivery_mode")
+        if headers is not None:
+            body["headers"] = headers
+        if params is not None:
+            body["params"] = params
+        if auth is not None:
+            body["auth"] = validate_webhook_auth(auth)
+        if formatter_config is not None:
+            body["formatter_config"] = formatter_config
+        if is_active is not None:
+            body["is_active"] = is_active
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/webhooks/{webhook_id}",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_webhook(webhook_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete a webhook endpoint.
+
+    Use when:
+    - You want to remove a webhook from your account.
+
+    Args:
+        webhook_id: The webhook ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON. On success the API returns an empty object `{}` with HTTP 200
+        (there is no success/webhook_id/message body). A missing webhook
+        returns 404, surfaced here as an error string.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/webhooks/{webhook_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def test_webhook(webhook_id: str, api_key: str = "", payload: dict[str, Any] | None = None) -> str:
+    """
+    Send a test delivery to a webhook endpoint.
+
+    Use when:
+    - You want to verify a webhook URL is reachable and correctly configured
+      before attaching it to a monitor or job.
+
+    Args:
+        webhook_id: The webhook ID to test.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        payload: Optional custom JSON object to send as the test body. If omitted,
+            the API sends a default sample payload.
+
+    Returns:
+        JSON with `success`, `message`, `http_status_code` (the status the
+        target URL returned to the test delivery), and `response_body`. If the
+        target returns a non-2xx status the call is reported as an error string
+        that includes that upstream status.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        body: dict[str, Any] | None = {"payload": payload} if payload is not None else None
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/webhooks/{webhook_id}/test",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def assign_webhook_resource(
+    webhook_id: str,
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+) -> str:
+    """
+    Map a resource (job, monitor, or monitor_group) to a webhook.
+
+    Use when:
+    - You want a webhook to fire for a specific job or monitor's deliveries.
+
+    Args:
+        webhook_id: The webhook ID to attach the resource to.
+        resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+        resource_id: The ID of the job/monitor/monitor_group to map.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, `already_existed`, and a `mapping` object
+        (id, webhook_id, resource_type, resource_id, assigned_at).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook or resource not found.
+        - 422: invalid resource_type.
+    """
+    try:
+        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        body = {"resource_type": resource_type, "resource_id": resource_id}
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/webhooks/{webhook_id}/resources",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_webhook_resources(
+    webhook_id: str,
+    api_key: str = "",
+    resource_type: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> str:
+    """
+    List the resources mapped to a webhook.
+
+    Use when:
+    - You want to see which jobs/monitors a webhook is attached to.
+
+    Args:
+        webhook_id: The webhook ID whose resource mappings you want.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        resource_type: Optional filter: 'job', 'monitor', or 'monitor_group'.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+
+    Returns:
+        JSON with `total`, `page`, `page_size`, `total_pages`, and a `resources`
+        list of mapping objects (id, webhook_id, resource_type, resource_id, assigned_at).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook not found.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if resource_type:
+            params["resource_type"] = validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/webhooks/{webhook_id}/resources",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def remove_webhook_resource(
+    webhook_id: str,
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+) -> str:
+    """
+    Unmap a resource from a webhook.
+
+    Use when:
+    - You want to stop a webhook from firing for a specific job or monitor.
+
+    Args:
+        webhook_id: The webhook ID to detach the resource from.
+        resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+        resource_id: The ID of the mapped job/monitor/monitor_group.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON. On success the API returns an empty object `{}` with HTTP 200.
+        A missing mapping returns 404, surfaced here as an error string.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: mapping not found.
+    """
+    try:
+        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/webhooks/{webhook_id}/resources/{resource_type}/{resource_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_resource_webhooks(
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+    is_active: bool | None = None,
+    page: int = 1,
+    page_size: int = 100,
+) -> str:
+    """
+    List the webhooks mapped to a specific resource (job/monitor/monitor_group).
+
+    Use when:
+    - You have a job or monitor ID and want to know which webhooks will fire for it.
+
+    Args:
+        resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+        resource_id: The ID of the job/monitor/monitor_group.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        is_active: Optional filter — only active (true) or inactive (false) webhooks.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+
+    Returns:
+        JSON with pagination fields and the webhooks mapped to this resource
+        (each a WebhookOutputData; see get_webhook for its fields).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: invalid resource_type.
+    """
+    try:
+        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if is_active is not None:
+            params["is_active"] = is_active
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/resources/{resource_type}/{resource_id}/webhooks",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_webhook_history(
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 50,
+) -> str:
+    """
+    Get the webhook delivery history for a resource (job/monitor/monitor_group).
+
+    Use when:
+    - You want to see past webhook delivery attempts and their outcomes for a
+      specific job or monitor.
+
+    Args:
+        resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+        resource_id: The ID of the job/monitor/monitor_group.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 50, max: 500).
+
+    Returns:
+        JSON with the delivery history records for the resource.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: invalid resource_type.
+    """
+    try:
+        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        validate_page_params(page, page_size, max_page_size=500)
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/webhook-history",
+            params={
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "page": page,
+                "page_size": page_size,
+            },
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Dataset tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def create_dataset(
+    name: str,
+    api_key: str = "",
+    description: str = "",
+    entity_ids: list[str] | None = None,
+    project_id: str = "",
+) -> str:
+    """
+    Create a new dataset.
+
+    Datasets are collections of entities (companies/people). Connect a dataset to
+    a job via `submit_query(connected_dataset_ids=[...])` to narrow retrieval scope.
+
+    Args:
+        name: Human-readable dataset name (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        description: Optional dataset description.
+        entity_ids: Optional list of existing entity IDs to seed the dataset with.
+        project_id: Optional project ID to associate this dataset with.
+
+    Returns:
+        JSON dataset object: `id`, `organization_id`, `name`, `description`,
+        `entity_count`, `entity_status_breakdown`, `health_score`,
+        `health_breakdown`, `latest_status`, `created_by_user_id`,
+        `sharing_info`, `created_at`, `updated_at`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"name": name}
+        if description:
+            body["description"] = description
+        if entity_ids:
+            body["entity_ids"] = entity_ids
+        if project_id:
+            body["project_id"] = project_id
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/datasets/",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_datasets(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    latest_status: str = "",
+    sort_by: str = "",
+    sort_order: str = "",
+    ownership: str = "",
+    project_id: str = "",
+) -> str:
+    """
+    List your datasets.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+        search: Optional text filter on the dataset name.
+        latest_status: Optional status filter: 'pending', 'enriching', 'ready', or 'failed'.
+        sort_by: Optional sort field: 'name', 'created_at', or 'status'.
+        sort_order: Optional sort direction: 'asc' or 'desc'.
+        ownership: Optional ownership filter: 'all', 'own', or 'shared'.
+        project_id: Optional filter to datasets belonging to a specific project.
+
+    Returns:
+        JSON with `datasets` (list of dataset objects), `total`, `page`, `page_size`.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            params["search"] = search
+        if latest_status:
+            params["latest_status"] = validate_choice(latest_status, DATASET_STATUSES, "latest_status")
+        if sort_by:
+            params["sort_by"] = validate_choice(sort_by, DATASET_SORT_BY, "sort_by")
+        if sort_order:
+            params["sort_order"] = validate_choice(sort_order, SORT_ORDERS, "sort_order")
+        if ownership:
+            params["ownership"] = validate_choice(ownership, OWNERSHIP_VALUES, "ownership")
+        if project_id:
+            params["project_id"] = project_id
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/datasets/",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_dataset(dataset_id: str, api_key: str = "") -> str:
+    """
+    Get a single dataset's details.
+
+    Args:
+        dataset_id: The dataset ID to retrieve.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON dataset object (see `create_dataset` for fields), including
+        `entity_count`, `entity_status_breakdown`, `health_score`, and `latest_status`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/datasets/{dataset_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_dataset(
+    dataset_id: str,
+    api_key: str = "",
+    name: str | None = None,
+    description: str | None = None,
+) -> str:
+    """
+    Update a dataset's name and/or description.
+
+    Args:
+        dataset_id: The dataset ID to update.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        name: Optional new dataset name.
+        description: Optional new dataset description.
+
+    Returns:
+        JSON of the updated dataset object.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/datasets/{dataset_id}",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_dataset(dataset_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete a dataset.
+
+    The entities the dataset referenced are not deleted; only the dataset and its
+    entity associations are removed.
+
+    Args:
+        dataset_id: The dataset ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON. On success the API returns an empty object `{}` with HTTP 200.
+        A missing dataset returns 404, surfaced here as an error string.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/datasets/{dataset_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def add_dataset_entities(dataset_id: str, entity_ids: list[str], api_key: str = "") -> str:
+    """
+    Add existing entities to a dataset.
+
+    Args:
+        dataset_id: The dataset ID to add entities to.
+        entity_ids: List of entity IDs to add (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `dataset_id` and `affected_count` (number of entities added).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+        - 422: input validation errors.
+    """
+    try:
+        if not entity_ids:
+            raise ValueError("entity_ids must be a non-empty list.")
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/datasets/{dataset_id}/entities",
+            json_data={"entity_ids": entity_ids},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def remove_dataset_entities(dataset_id: str, entity_ids: list[str], api_key: str = "") -> str:
+    """
+    Remove entities from a dataset (the entities themselves are not deleted).
+
+    Args:
+        dataset_id: The dataset ID to remove entities from.
+        entity_ids: List of entity IDs to remove (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `dataset_id` and `affected_count` (number of entities removed).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+    """
+    try:
+        if not entity_ids:
+            raise ValueError("entity_ids must be a non-empty list.")
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/datasets/{dataset_id}/entities",
+            json_data={"entity_ids": entity_ids},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_dataset_entities(
+    dataset_id: str,
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    status: str = "",
+    entity_type: str = "",
+    sort_by: str = "",
+    sort_order: str = "",
+) -> str:
+    """
+    List the entities contained in a dataset.
+
+    Args:
+        dataset_id: The dataset ID whose entities you want.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100).
+        search: Optional text filter on entity name.
+        status: Optional status filter: 'pending', 'enriching', 'ready', or 'failed'.
+        entity_type: Optional type filter: 'company' or 'person'.
+        sort_by: Optional sort field: 'created_at', 'name', or 'status'.
+        sort_order: Optional sort direction: 'asc' or 'desc'.
+
+    Returns:
+        JSON with `entities` (list of entity summaries: `id`, `name`,
+        `entity_type`, `status`, `description`, `attributes`), `total`, `page`,
+        `page_size`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        body: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            body["search"] = search
+        if status:
+            body["status"] = validate_choice(status, ENTITY_STATUSES, "status")
+        if entity_type:
+            body["entity_type"] = validate_choice(entity_type, ENTITY_TYPES, "entity_type")
+        if sort_by:
+            body["sort_by"] = validate_choice(sort_by, ENTITY_SORT_BY, "sort_by")
+        if sort_order:
+            body["sort_order"] = validate_choice(sort_order, SORT_ORDERS, "sort_order")
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/datasets/{dataset_id}/entities/list",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_dataset_status(dataset_id: str, api_key: str = "") -> str:
+    """
+    Get the status history of a dataset (e.g. its enrichment progress over time).
+
+    Args:
+        dataset_id: The dataset ID to inspect.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `dataset_id` and `history` — a list of status entries, each
+        with `status`, `additional_information`, and `created_at`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: dataset not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/datasets/{dataset_id}/status",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Entity tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def create_entity(
+    name: str,
+    api_key: str = "",
+    entity_type: str = "",
+    description: str = "",
+    additional_attributes: dict[str, Any] | None = None,
+) -> str:
+    """
+    Create a single entity (a company or person).
+
+    Args:
+        name: Entity name (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        entity_type: Optional entity type: 'company' (default) or 'person'.
+        description: Optional description of the entity.
+        additional_attributes: Optional structured attributes. For companies, use
+            `{"company_attributes": {"alternative_names": [...], "domain": "...",
+            "key_persons": [...], "description": "..."}}`.
+
+    Returns:
+        JSON with `id` and `status` (e.g. 'pending' while enrichment runs).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"name": name}
+        if entity_type:
+            body["entity_type"] = validate_choice(entity_type, ENTITY_TYPES, "entity_type")
+        if description:
+            body["description"] = description
+        if additional_attributes is not None:
+            body["additional_attributes"] = additional_attributes
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/entities/",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_entities(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    status: str = "",
+    entity_type: str = "",
+    sort_by: str = "",
+    sort_order: str = "",
+) -> str:
+    """
+    List your entities.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+        search: Optional text filter on entity name.
+        status: Optional status filter: 'pending', 'enriching', 'ready', or 'failed'.
+        entity_type: Optional type filter: 'company' or 'person'.
+        sort_by: Optional sort field: 'created_at', 'name', or 'status'.
+        sort_order: Optional sort direction: 'asc' or 'desc'.
+
+    Returns:
+        JSON with `entities` (list of full entity objects), `total`, `page`, `page_size`.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            params["search"] = search
+        if status:
+            params["status"] = validate_choice(status, ENTITY_STATUSES, "status")
+        if entity_type:
+            params["entity_type"] = validate_choice(entity_type, ENTITY_TYPES, "entity_type")
+        if sort_by:
+            params["sort_by"] = validate_choice(sort_by, ENTITY_SORT_BY, "sort_by")
+        if sort_order:
+            params["sort_order"] = validate_choice(sort_order, SORT_ORDERS, "sort_order")
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/entities/",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def create_entities_batch(
+    entities: list[dict[str, Any]] | str,
+    api_key: str = "",
+) -> str:
+    """
+    Create multiple entities in one call.
+
+    Args:
+        entities: A list of entity objects, each at least `{"name": ...}` with
+            optional `entity_type` ('company'/'person'), `description`, and
+            `additional_attributes`. May also be passed as a JSON-string array.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `entities` (list of `{id, status}`) and `count`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        parsed = coerce_definition_list(entities, "entities")
+        if not parsed:
+            raise ValueError("entities must be a non-empty array.")
+        normalized: list[dict[str, Any]] = []
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                raise ValueError(f"entities[{idx}] must be an object.")
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"entities[{idx}].name must be a non-empty string.")
+            entry: dict[str, Any] = {"name": name}
+            if item.get("entity_type"):
+                entry["entity_type"] = validate_choice(
+                    item["entity_type"], ENTITY_TYPES, f"entities[{idx}].entity_type"
+                )
+            if item.get("description"):
+                entry["description"] = item["description"]
+            if item.get("additional_attributes") is not None:
+                entry["additional_attributes"] = item["additional_attributes"]
+            normalized.append(entry)
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/entities/batch",
+            json_data={"entities": normalized},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_entity(entity_id: str, api_key: str = "") -> str:
+    """
+    Get a single entity's details.
+
+    Args:
+        entity_id: The entity ID to retrieve.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON entity object: `id`, `entity_type`, `organization_id`, `name`,
+        `description`, `additional_attributes`, `status`, `created_by_user_id`,
+        `created_at`, `updated_at`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: entity not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/entities/{entity_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_entity(
+    entity_id: str,
+    api_key: str = "",
+    name: str | None = None,
+    description: str | None = None,
+    additional_attributes: dict[str, Any] | None = None,
+) -> str:
+    """
+    Update an entity's name, description, and/or attributes.
+
+    Args:
+        entity_id: The entity ID to update.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        name: Optional new entity name.
+        description: Optional new description.
+        additional_attributes: Optional updated structured attributes
+            (see `create_entity` for the company_attributes shape).
+
+    Returns:
+        JSON of the updated entity object.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: entity not found.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        if additional_attributes is not None:
+            body["additional_attributes"] = additional_attributes
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/entities/{entity_id}",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_entity(entity_id: str, api_key: str = "") -> str:
+    """
+    Permanently delete an entity.
+
+    Args:
+        entity_id: The entity ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON. On success the API returns an empty object `{}` with HTTP 200.
+        A missing entity returns 404, surfaced here as an error string.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: entity not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/entities/{entity_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+# ---------------------------------------------------------------------------
+# Project tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def create_project(name: str, api_key: str = "", description: str = "") -> str:
+    """
+    Create a new project.
+
+    Projects group related resources (jobs, monitors, datasets, monitor_groups)
+    so you can organize work and filter listings by `project_id`.
+
+    Args:
+        name: Human-readable project name (required).
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        description: Optional project description.
+
+    Returns:
+        JSON with `success`, `message`, `project_id`, and `name`.
+        Save `project_id` to attach resources or pass to `submit_query`/`create_monitor`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {"name": name}
+        if description:
+            body["description"] = description
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path="/catchAll/projects/",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_projects(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    search: str = "",
+    ownership: str = "",
+) -> str:
+    """
+    List your projects.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+        search: Optional text filter on the project name.
+        ownership: Optional ownership filter: 'all', 'own', or 'shared'.
+
+    Returns:
+        JSON with `total`, `page`, `page_size`, `total_pages`, and a `projects`
+        list. Each project has `project_id`, `name`, `description`,
+        `resources_count`, `created_at`, `updated_at`, and `sharing_info`.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if search:
+            params["search"] = search
+        if ownership:
+            params["ownership"] = validate_choice(ownership, OWNERSHIP_VALUES, "ownership")
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/projects/",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_project(project_id: str, api_key: str = "") -> str:
+    """
+    Get a single project's details.
+
+    Args:
+        project_id: The project ID to retrieve.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, `project_id`, `name`, `description`,
+        `resources_count`, `created_at`, `updated_at`, and `sharing_info`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/projects/{project_id}",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def update_project(
+    project_id: str,
+    api_key: str = "",
+    name: str | None = None,
+    description: str | None = None,
+) -> str:
+    """
+    Update a project's name and/or description.
+
+    Only the fields you provide are changed.
+
+    Args:
+        project_id: The project ID to update.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        name: Optional new project name.
+        description: Optional new project description.
+
+    Returns:
+        JSON with `success`, `message`, and `project_id`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+        - 422: input validation errors.
+    """
+    try:
+        body: dict[str, Any] = {}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        result = await make_api_request(
+            api_key=api_key,
+            method="PATCH",
+            path=f"/catchAll/projects/{project_id}",
+            json_data=body,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def delete_project(project_id: str, api_key: str = "", delete_resources: bool = False) -> str:
+    """
+    Delete a project.
+
+    By default the project's resources (jobs, monitors, etc.) are detached but
+    kept. Set `delete_resources=true` to also delete the contained resources.
+
+    Args:
+        project_id: The project ID to delete.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        delete_resources: If true, also delete the project's resources (default false).
+
+    Returns:
+        JSON with `success`, `message`, `project_id`, and `deleted_resources`
+        (a map of resource_type -> count deleted).
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/projects/{project_id}",
+            params={"delete_resources": delete_resources},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def get_project_overview(project_id: str, api_key: str = "") -> str:
+    """
+    Get a project's resource overview (counts grouped by resource type and status).
+
+    Args:
+        project_id: The project ID to summarize.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `project_id` and `overview` — a nested map of
+        resource_type -> {status -> count}.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+    """
+    try:
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/projects/{project_id}/overview",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def add_project_resources(
+    project_id: str,
+    resources: list[dict[str, str]] | str,
+    api_key: str = "",
+) -> str:
+    """
+    Add one or more resources to a project.
+
+    Args:
+        project_id: The project ID to add resources to.
+        resources: A list of resource objects, each `{"resource_type": ..., "resource_id": ...}`.
+            `resource_type` is one of: 'job', 'monitor', 'dataset', 'monitor_group'.
+            May also be passed as a JSON-string array for client compatibility.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success`, `message`, and a `results` list. Each result has
+        `resource_type`, `resource_id`, `success`, `message`, and `already_exists`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+        - 422: invalid resource entry.
+    """
+    try:
+        parsed = coerce_definition_list(resources, "resources")
+        if not parsed:
+            raise ValueError("resources must be a non-empty array.")
+        normalized: list[dict[str, str]] = []
+        for idx, item in enumerate(parsed):
+            if not isinstance(item, dict):
+                raise ValueError(f"resources[{idx}] must be an object.")
+            rtype = item.get("resource_type")
+            rid = item.get("resource_id")
+            if not isinstance(rtype, str):
+                raise ValueError(f"resources[{idx}].resource_type is required.")
+            validate_choice(rtype, PROJECT_RESOURCE_TYPES, f"resources[{idx}].resource_type")
+            if not isinstance(rid, str) or not rid:
+                raise ValueError(f"resources[{idx}].resource_id must be a non-empty string.")
+            normalized.append({"resource_type": rtype, "resource_id": rid})
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/projects/{project_id}/resources",
+            json_data={"resources": normalized},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def list_project_resources(
+    project_id: str,
+    api_key: str = "",
+    resource_type: str = "",
+    page: int = 1,
+    page_size: int = 100,
+) -> str:
+    """
+    List the resources contained in a project.
+
+    Args:
+        project_id: The project ID whose resources you want.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        resource_type: Optional filter: 'job', 'monitor', 'dataset', or 'monitor_group'.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 1000).
+
+    Returns:
+        JSON with `total`, `page`, `page_size`, `total_pages`, and a `resources`
+        list. Each item has `resource_type`, `resource_id`, `name`, `created_at`,
+        and `metadata`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project not found.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if resource_type:
+            params["resource_type"] = validate_choice(resource_type, PROJECT_RESOURCE_TYPES, "resource_type")
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/projects/{project_id}/resources",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def remove_project_resource(
+    project_id: str,
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+) -> str:
+    """
+    Remove a single resource from a project.
+
+    Args:
+        project_id: The project ID to remove the resource from.
+        resource_type: Resource type: 'job', 'monitor', 'dataset', or 'monitor_group'.
+        resource_id: The ID of the resource to remove.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with `success` and `message`.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: project or resource mapping not found.
+    """
+    try:
+        validate_choice(resource_type, PROJECT_RESOURCE_TYPES, "resource_type")
+        result = await make_api_request(
+            api_key=api_key,
+            method="DELETE",
+            path=f"/catchAll/projects/{project_id}/resources/{resource_type}/{resource_id}",
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
