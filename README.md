@@ -4,10 +4,6 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 
 ## Tool To Endpoint Mapping
 
-This server is synced with CatchAll API v1.5.3 — every endpoint has a tool, except
-the two CSV file-upload endpoints, which are intentionally not exposed (see the note
-under Datasets below).
-
 ### Jobs
 
 | MCP Tool | Method | Endpoint |
