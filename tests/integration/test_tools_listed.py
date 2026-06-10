@@ -52,8 +52,7 @@ EXPECTED_TOOLS = {
     "add_project_resources",
     "list_project_resources",
     "remove_project_resource",
-    # Dataset tools (CSV upload endpoints are intentionally not exposed —
-    # they take a server-side file path, which is unsafe for a hosted server)
+    # Dataset tools
     "create_dataset",
     "list_datasets",
     "get_dataset",
@@ -63,6 +62,10 @@ EXPECTED_TOOLS = {
     "remove_dataset_entities",
     "list_dataset_entities",
     "get_dataset_status",
+    # CSV upload tools (v1.6.1): accept inline CSV content (raw text or
+    # base64), never a server-side file path — safe for a hosted server.
+    "create_dataset_from_csv",
+    "append_csv_to_dataset",
     # Entity tools
     "create_entity",
     "list_entities",
@@ -106,3 +109,35 @@ async def test_submit_query_has_required_params(mcp):
     schema = tool.inputSchema
     assert "query" in schema.get("properties", {}), "submit_query missing 'query' param"
     assert "query" in schema.get("required", []), "submit_query 'query' should be required"
+
+
+@pytest.mark.asyncio
+async def test_validate_query_has_no_context_param(mcp):
+    """v1.6.1 removed `context` from CheckQueryQualityRequestDto."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "validate_query"), None)
+    assert tool is not None, "validate_query not found"
+    props = tool.inputSchema.get("properties", {})
+    assert "context" not in props, "validate_query still advertises the removed 'context' param"
+    assert "query" in props
+
+
+@pytest.mark.asyncio
+async def test_csv_upload_tool_schemas(mcp):
+    """v1.6.1 CSV upload tools expose the documented multipart fields."""
+    result = await mcp.list_tools()
+    tools = {t.name: t for t in result.tools}
+
+    create = tools.get("create_dataset_from_csv")
+    assert create is not None, "create_dataset_from_csv not found"
+    props = create.inputSchema.get("properties", {})
+    required = create.inputSchema.get("required", [])
+    assert {"name", "file", "description", "project_id"} <= set(props)
+    assert "name" in required and "file" in required
+
+    append = tools.get("append_csv_to_dataset")
+    assert append is not None, "append_csv_to_dataset not found"
+    props = append.inputSchema.get("properties", {})
+    required = append.inputSchema.get("required", [])
+    assert {"dataset_id", "file"} <= set(props)
+    assert "dataset_id" in required and "file" in required

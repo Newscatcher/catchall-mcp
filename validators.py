@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from typing import Any, Literal
 
@@ -181,6 +183,63 @@ def validate_http_method(method: str) -> str:
     """Validate and normalize a webhook delivery HTTP method."""
     normalized = method.upper()
     return validate_choice(normalized, HTTP_METHODS, "method")
+
+
+# Hard cap on inline CSV content (decoded bytes). The hosted server buffers
+# the whole upload in memory, so uncapped input is a memory-DoS vector.
+MAX_CSV_BYTES = 10 * 1024 * 1024  # 10 MB
+# Base64 inflates content by ~4/3, so a string longer than this cannot decode
+# to <= MAX_CSV_BYTES. Checked before decoding so over-cap input is rejected
+# with a cheap len() instead of being buffered/decoded first.
+_MAX_CSV_B64_CHARS = (MAX_CSV_BYTES * 4) // 3 + 4
+
+_CSV_TOO_LARGE = (
+    f"file is too large: inline CSV content is capped at "
+    f"{MAX_CSV_BYTES // (1024 * 1024)} MB. Split the CSV and use "
+    "append_csv_to_dataset for the remaining rows."
+)
+
+
+def coerce_csv_file_content(file: str) -> bytes:
+    """Turn the `file` argument of a CSV upload tool into raw CSV bytes.
+
+    Accepts either:
+    - raw CSV text (anything containing a newline or a comma), or
+    - a standard base64-encoded CSV (no line wrapping).
+
+    Content is capped at MAX_CSV_BYTES (10 MB) after base64 decoding; the
+    raw string length is checked before any decode so oversized input is
+    rejected cheaply, then the decoded size is checked again.
+
+    Server-side file paths are deliberately NOT accepted: this server may be
+    hosted, and reading arbitrary local paths on behalf of a remote caller
+    would leak server files.
+    """
+    if not isinstance(file, str) or not file.strip():
+        raise ValueError("file is required: pass the CSV content as raw text or base64.")
+
+    # Cheap pre-decode size guard (see _MAX_CSV_B64_CHARS above).
+    if len(file) > _MAX_CSV_B64_CHARS:
+        raise ValueError(_CSV_TOO_LARGE)
+
+    # Raw CSV text: base64 never contains a newline or comma, CSV data does.
+    if "\n" in file or "," in file:
+        encoded = file.encode("utf-8")
+        if len(encoded) > MAX_CSV_BYTES:
+            raise ValueError(_CSV_TOO_LARGE)
+        return encoded
+
+    try:
+        decoded = base64.b64decode(file, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(
+            "file must be raw CSV text or standard base64-encoded CSV content."
+        ) from exc
+    if not decoded:
+        raise ValueError("file decoded to empty content; provide a non-empty CSV.")
+    if len(decoded) > MAX_CSV_BYTES:
+        raise ValueError(_CSV_TOO_LARGE)
+    return decoded
 
 
 def validate_webhook_auth(auth: dict[str, Any] | None) -> dict[str, Any] | None:
