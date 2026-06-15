@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [Unreleased] — CatchAll API v1.6.1 sync (2026-06-10)
+
+> **Note:** this entry re-adds CSV upload tools that were deliberately removed in
+> `cd86a40` ("unsafe for a hosted server"). The unsafe part was the `file_path`
+> argument (server-side filesystem reads). The new tools accept **inline content
+> only** (raw CSV text or base64, hard 10 MB cap, auth required) — no filesystem
+> access. Re-adding was reviewed and approved by the maintainer on 2026-06-10.
+
+
+### Added
+- `create_dataset_from_csv` tool — wraps `POST /catchAll/datasets/upload`
+  (multipart). Params: `name` (required), `file` (required; raw CSV text or
+  base64 — server-side file paths are not accepted), `description` (optional),
+  `project_id` (optional, new in 1.6.1). Returns `dataset_id`, `dataset_name`,
+  `entities_created`, `validation_report`.
+- `append_csv_to_dataset` tool — wraps `POST /catchAll/datasets/{dataset_id}/upload`
+  (multipart). Params: `dataset_id` (required), `file` (required). Returns
+  `dataset_id`, `entities_created`, `validation_report`.
+- `make_api_upload` helper for authenticated multipart/form-data uploads.
+- `coerce_csv_file_content` validator: accepts raw CSV text or standard
+  base64, rejects empty input and anything else. Inline CSV content is
+  capped at a hard 10 MB (decoded): the raw string length is checked before
+  any base64 decode (base64 inflates ~4/3) and the decoded size is checked
+  after, so over-cap uploads fail fast with a clear error instead of
+  buffering in memory.
+
+### Changed
+- `validate_query`: removed the stale optional `context` parameter. The 1.6.1
+  API dropped it from `CheckQueryQualityRequestDto`; the tool now sends only
+  `query` to `/catchAll/validate`. Live behavior is unchanged.
+
+### Tests
+- Unit tests for both upload tools (request mapping, optional-field omission,
+  base64 input, fail-fast validation) and for `make_api_upload`
+  (auth required, multipart shape).
+- Size-cap tests for `coerce_csv_file_content`: at-cap accepted and over-cap
+  rejected, for both raw CSV and base64 input, plus the cheap pre-decode
+  length guard.
+- Regression test that `validate_query` no longer advertises `context`.
+- Tool-manifest integration test updated: the two new tools are now expected,
+  plus input-schema checks for the new tools and `validate_query`.
+
+---
+
 ## [Unreleased] — feat/v1.53.0_release
 
 ### Added

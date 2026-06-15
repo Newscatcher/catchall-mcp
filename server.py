@@ -36,6 +36,7 @@ from validators import (
     WEBHOOK_TYPES,
     EnrichmentDefinition,
     ValidatorDefinition,
+    coerce_csv_file_content,
     coerce_definition_list,
     validate_choice,
     validate_enrichment_definitions,
@@ -344,6 +345,57 @@ async def make_api_request(
             headers=headers,
             json=json_data,
             params=params,
+        )
+
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+                if isinstance(error_data, dict):
+                    if "detail" in error_data:
+                        detail = error_data["detail"]
+                        if isinstance(detail, dict) and "detail" in detail:
+                            error_msg = detail["detail"]
+                        else:
+                            error_msg = str(detail)
+                    else:
+                        error_msg = json.dumps(error_data)
+                else:
+                    error_msg = str(error_data)
+            except Exception:
+                error_msg = response.text or f"HTTP {response.status_code}"
+
+            raise ValueError(f"API Error ({response.status_code}): {error_msg}")
+
+        try:
+            return response.json()
+        except json.JSONDecodeError:
+            if response.text and response.text.strip():
+                raise ValueError(f"API returned non-JSON response: {response.text[:500]}")
+            return {}
+
+
+async def make_api_upload(
+    api_key: str,
+    path: str,
+    file_bytes: bytes,
+    data: dict[str, Any] | None = None,
+    filename: str = "upload.csv",
+) -> dict[str, Any]:
+    """POST a multipart/form-data CSV upload to the CatchAll API.
+
+    httpx sets the multipart Content-Type (with boundary) itself, so unlike
+    `make_api_request` no Content-Type header is set here.
+    """
+    headers = {"Accept": "application/json"}
+    key = get_api_key(api_key)
+    headers["x-api-key"] = key
+
+    async with httpx.AsyncClient(base_url=API_BASE_URL, timeout=120.0) as client:
+        response = await client.post(
+            path,
+            headers=headers,
+            files={"file": (filename, file_bytes, "text/csv")},
+            data=data,
         )
 
         if response.status_code >= 400:
@@ -777,7 +829,7 @@ async def delete_job(job_id: str, api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def validate_query(query: str, api_key: str = "", context: str = "") -> str:
+async def validate_query(query: str, api_key: str = "") -> str:
     """
     Check the quality of a query before submitting a job ("Check Query Quality").
 
@@ -793,7 +845,6 @@ async def validate_query(query: str, api_key: str = "", context: str = "") -> st
     Args:
         query: The natural-language query to assess (required).
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
-        context: Optional extra context that sharpens the assessment.
 
     Returns:
         JSON with:
@@ -810,9 +861,9 @@ async def validate_query(query: str, api_key: str = "", context: str = "") -> st
         - 422: input validation errors.
     """
     try:
+        # v1.6.1: CheckQueryQualityRequestDto only accepts `query` — the optional
+        # `context` field was removed from the API request schema.
         body: dict[str, Any] = {"query": query}
-        if context:
-            body["context"] = context
         result = await make_api_request(
             api_key=api_key,
             method="POST",
@@ -2085,6 +2136,110 @@ async def get_dataset_status(dataset_id: str, api_key: str = "") -> str:
             api_key=api_key,
             method="GET",
             path=f"/catchAll/datasets/{dataset_id}/status",
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def create_dataset_from_csv(
+    name: str,
+    file: str,
+    api_key: str = "",
+    description: str = "",
+    project_id: str = "",
+) -> str:
+    """
+    Create a new dataset by uploading a CSV file.
+
+    The CSV must have at least a `name` column; additional columns are mapped
+    to entity attributes. Max file size is plan-dependent. To add CSV rows to
+    an existing dataset, use `append_csv_to_dataset` instead.
+
+    Args:
+        name: Human-readable dataset name (required).
+        file: CSV content (required) — raw CSV text or standard base64-encoded
+            CSV, capped at 10 MB after decoding. Server-side file paths are
+            not accepted.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        description: Optional dataset description.
+        project_id: Optional project ID to associate this dataset with (new in 1.6.1).
+
+    Returns:
+        JSON with:
+        - `dataset_id`: unique identifier of the created dataset.
+        - `dataset_name`: name of the created dataset.
+        - `entities_created`: number of entities created from the CSV.
+        - `validation_report`: `{total_rows, valid_rows, skipped_count,
+          skipped_rows}` summary of CSV processing.
+
+    Common API errors:
+        - 400: file is not a valid CSV.
+        - 403: missing or invalid API key.
+        - 422: CSV parsing error or missing required columns.
+    """
+    try:
+        if not name or not name.strip():
+            raise ValueError("name is required.")
+        file_bytes = coerce_csv_file_content(file)
+        data: dict[str, Any] = {"name": name}
+        if description:
+            data["description"] = description
+        if project_id:
+            data["project_id"] = project_id
+        result = await make_api_upload(
+            api_key=api_key,
+            path="/catchAll/datasets/upload",
+            file_bytes=file_bytes,
+            data=data,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def append_csv_to_dataset(dataset_id: str, file: str, api_key: str = "") -> str:
+    """
+    Append entities from a CSV file to an existing dataset.
+
+    Parses the CSV and appends its entities to the dataset. Duplicate rows
+    (by name) are skipped. To create a new dataset from a CSV, use
+    `create_dataset_from_csv` instead.
+
+    Args:
+        dataset_id: The dataset ID to append entities to (required).
+        file: CSV content (required) — raw CSV text or standard base64-encoded
+            CSV, capped at 10 MB after decoding. Server-side file paths are
+            not accepted.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        JSON with:
+        - `dataset_id`: ID of the dataset that was updated.
+        - `entities_created`: number of new entities created from the CSV.
+        - `validation_report`: `{total_rows, valid_rows, skipped_count,
+          skipped_rows}` summary of CSV processing.
+
+    Common API errors:
+        - 400: file is not a valid CSV.
+        - 403: missing or invalid API key, or dataset does not belong to this user.
+        - 404: dataset not found.
+        - 422: CSV parsing error.
+    """
+    try:
+        if not dataset_id or not dataset_id.strip():
+            raise ValueError("dataset_id is required.")
+        file_bytes = coerce_csv_file_content(file)
+        result = await make_api_upload(
+            api_key=api_key,
+            path=f"/catchAll/datasets/{dataset_id}/upload",
+            file_bytes=file_bytes,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:

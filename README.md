@@ -74,13 +74,14 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `remove_dataset_entities` | `DELETE` | `/catchAll/datasets/{dataset_id}/entities` |
 | `list_dataset_entities` | `POST` | `/catchAll/datasets/{dataset_id}/entities/list` |
 | `get_dataset_status` | `GET` | `/catchAll/datasets/{dataset_id}/status` |
+| `create_dataset_from_csv` | `POST` | `/catchAll/datasets/upload` |
+| `append_csv_to_dataset` | `POST` | `/catchAll/datasets/{dataset_id}/upload` |
 
-> **Not exposed:** the CSV upload endpoints (`POST /catchAll/datasets/upload` and
-> `POST /catchAll/datasets/{dataset_id}/upload`) are intentionally omitted. They take an
-> uploaded file, which over a remote/hosted MCP would mean reading a file from the
-> **server's** filesystem — unsafe and not useful to remote callers. Add entities to a
-> dataset with `create_dataset(entity_ids=...)` / `add_dataset_entities` instead, after
-> creating them via `create_entity` / `create_entities_batch`.
+> **CSV uploads (v1.6.1):** `create_dataset_from_csv` and `append_csv_to_dataset` take
+> the CSV **content** in the `file` parameter — raw CSV text or standard base64. They
+> never read a path from the server's filesystem, so they stay safe on a remote/hosted
+> MCP. Inline CSV content is capped at a hard 10 MB (after base64 decoding).
+> `create_dataset_from_csv` also accepts the new optional `project_id` field.
 
 ### Entities
 

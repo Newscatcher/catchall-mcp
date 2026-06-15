@@ -1,3 +1,5 @@
+import base64
+import inspect
 import json
 import os
 import sys
@@ -284,6 +286,59 @@ class ValidationHelperTests(unittest.TestCase):
         self.assertEqual(validators.validate_choice("own", validators.OWNERSHIP_VALUES, "ownership"), "own")
         with self.assertRaises(ValueError):
             validators.validate_choice("nope", validators.WEBHOOK_TYPES, "type")
+
+    def test_coerce_csv_file_content(self) -> None:
+        # Raw CSV text passes through as utf-8 bytes.
+        csv_text = "name,description\nAcme,maker of anvils\n"
+        self.assertEqual(validators.coerce_csv_file_content(csv_text), csv_text.encode("utf-8"))
+
+        # Standard base64-encoded CSV is decoded.
+        encoded = base64.b64encode(csv_text.encode("utf-8")).decode("ascii")
+        self.assertEqual(validators.coerce_csv_file_content(encoded), csv_text.encode("utf-8"))
+
+        # Empty / non-CSV / non-base64 input fails fast.
+        with self.assertRaises(ValueError):
+            validators.coerce_csv_file_content("")
+        with self.assertRaises(ValueError):
+            validators.coerce_csv_file_content("   ")
+        with self.assertRaises(ValueError):
+            validators.coerce_csv_file_content("not-base64-and-not-csv!!!")
+        with self.assertRaises(ValueError):
+            validators.coerce_csv_file_content(base64.b64encode(b"").decode("ascii"))
+
+    def test_coerce_csv_file_content_size_cap(self) -> None:
+        # Hard 10 MB cap on decoded inline CSV content (memory-DoS guard).
+        cap = validators.MAX_CSV_BYTES
+        header = "name,description\n"
+
+        # Raw CSV exactly at the cap is accepted.
+        at_cap = header + "a" * (cap - len(header))
+        self.assertEqual(len(at_cap.encode("utf-8")), cap)
+        self.assertEqual(validators.coerce_csv_file_content(at_cap), at_cap.encode("utf-8"))
+
+        # Raw CSV one byte over the cap is rejected with a clear message.
+        over_cap = at_cap + "a"
+        with self.assertRaises(ValueError) as ctx:
+            validators.coerce_csv_file_content(over_cap)
+        self.assertIn("10 MB", str(ctx.exception))
+
+        # Base64 that decodes to exactly the cap is accepted.
+        at_cap_bytes = at_cap.encode("utf-8")
+        encoded_at_cap = base64.b64encode(at_cap_bytes).decode("ascii")
+        self.assertEqual(validators.coerce_csv_file_content(encoded_at_cap), at_cap_bytes)
+
+        # Base64 that decodes to one byte over the cap is rejected.
+        encoded_over_cap = base64.b64encode(at_cap_bytes + b"a").decode("ascii")
+        with self.assertRaises(ValueError) as ctx:
+            validators.coerce_csv_file_content(encoded_over_cap)
+        self.assertIn("10 MB", str(ctx.exception))
+
+        # A grossly oversized string is rejected by the cheap pre-decode
+        # length guard (base64 inflates ~4/3, so > _MAX_CSV_B64_CHARS can
+        # never decode under the cap).
+        with self.assertRaises(ValueError) as ctx:
+            validators.coerce_csv_file_content("A" * (validators._MAX_CSV_B64_CHARS + 1))
+        self.assertIn("10 MB", str(ctx.exception))
 
     def test_validate_webhook_auth_object(self) -> None:
         # v1.5.3 auth is an object (bearer / api_key / basic), not a [user, pass] list.
@@ -882,6 +937,193 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     result = await fn(**kwargs)
                 self.assertEqual(result, f"Error: {expected_error}")
                 mock_api.assert_not_awaited()
+
+    async def test_validate_query_has_no_context_param(self) -> None:
+        """v1.6.1 removed `context` from CheckQueryQualityRequestDto — the tool
+        signature must no longer advertise it."""
+        params = inspect.signature(_unwrap(server.validate_query)).parameters
+        self.assertNotIn("context", params)
+        self.assertEqual(set(params), {"query", "api_key"})
+
+
+CSV_TEXT = "name,description\nAcme,maker of anvils\nGlobex,evil conglomerate\n"
+
+
+class CsvUploadToolTests(unittest.IsolatedAsyncioTestCase):
+    """Tools for the v1.6.1 CSV dataset upload endpoints."""
+
+    async def test_create_dataset_from_csv_full_request(self) -> None:
+        payload = {
+            "dataset_id": "ds-1",
+            "dataset_name": "anvils",
+            "entities_created": 2,
+            "validation_report": {
+                "total_rows": 2,
+                "valid_rows": 2,
+                "skipped_count": 0,
+                "skipped_rows": [],
+            },
+        }
+        with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = payload
+            result = await _unwrap(server.create_dataset_from_csv)(
+                name="anvils",
+                file=CSV_TEXT,
+                description="suppliers",
+                project_id="proj-1",
+            )
+
+        self.assertEqual(result, json.dumps(payload, indent=2))
+        mock_upload.assert_awaited_once()
+        called = mock_upload.await_args.kwargs
+        self.assertEqual(called["path"], "/catchAll/datasets/upload")
+        self.assertEqual(called["file_bytes"], CSV_TEXT.encode("utf-8"))
+        self.assertEqual(
+            called["data"],
+            {"name": "anvils", "description": "suppliers", "project_id": "proj-1"},
+        )
+
+    async def test_create_dataset_from_csv_omits_empty_optionals(self) -> None:
+        with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = {"dataset_id": "ds-1"}
+            await _unwrap(server.create_dataset_from_csv)(name="anvils", file=CSV_TEXT)
+
+        called = mock_upload.await_args.kwargs
+        self.assertEqual(called["data"], {"name": "anvils"})
+
+    async def test_create_dataset_from_csv_accepts_base64(self) -> None:
+        encoded = base64.b64encode(CSV_TEXT.encode("utf-8")).decode("ascii")
+        with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = {"dataset_id": "ds-1"}
+            await _unwrap(server.create_dataset_from_csv)(name="anvils", file=encoded)
+
+        called = mock_upload.await_args.kwargs
+        self.assertEqual(called["file_bytes"], CSV_TEXT.encode("utf-8"))
+
+    async def test_append_csv_to_dataset_request(self) -> None:
+        payload = {
+            "dataset_id": "ds-1",
+            "entities_created": 1,
+            "validation_report": {
+                "total_rows": 2,
+                "valid_rows": 1,
+                "skipped_count": 1,
+                "skipped_rows": [{"row": 2, "reason": "duplicate name"}],
+            },
+        }
+        with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
+            mock_upload.return_value = payload
+            result = await _unwrap(server.append_csv_to_dataset)(
+                dataset_id="ds-1", file=CSV_TEXT
+            )
+
+        self.assertEqual(result, json.dumps(payload, indent=2))
+        called = mock_upload.await_args.kwargs
+        self.assertEqual(called["path"], "/catchAll/datasets/ds-1/upload")
+        self.assertEqual(called["file_bytes"], CSV_TEXT.encode("utf-8"))
+        # Body_uploadCSVToDataset only has `file` — no extra form fields.
+        self.assertNotIn("data", called)
+
+    async def test_upload_tools_validate_input_before_calling_api(self) -> None:
+        invalid_calls = [
+            (
+                server.create_dataset_from_csv,
+                {"name": "", "file": CSV_TEXT},
+                "Error: name is required.",
+            ),
+            (
+                server.create_dataset_from_csv,
+                {"name": "anvils", "file": ""},
+                "Error: file is required: pass the CSV content as raw text or base64.",
+            ),
+            (
+                server.append_csv_to_dataset,
+                {"dataset_id": "", "file": CSV_TEXT},
+                "Error: dataset_id is required.",
+            ),
+            (
+                server.append_csv_to_dataset,
+                {"dataset_id": "ds-1", "file": "not-base64-and-not-csv!!!"},
+                "Error: file must be raw CSV text or standard base64-encoded CSV content.",
+            ),
+        ]
+        for tool_func, kwargs, expected_error in invalid_calls:
+            fn = _unwrap(tool_func)
+            with self.subTest(tool=fn.__name__, kwargs=kwargs):
+                with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
+                    result = await fn(**kwargs)
+                self.assertEqual(result, expected_error)
+                mock_upload.assert_not_awaited()
+
+
+class UploadRequestTests(unittest.IsolatedAsyncioTestCase):
+    """make_api_upload sends authenticated multipart requests."""
+
+    async def asyncSetUp(self) -> None:
+        self._old_env = os.environ.get("CATCHALL_API_KEY")
+        self._token = server.session_api_key.set("")
+        os.environ.pop("CATCHALL_API_KEY", None)
+
+    async def asyncTearDown(self) -> None:
+        server.session_api_key.reset(self._token)
+        if self._old_env is None:
+            os.environ.pop("CATCHALL_API_KEY", None)
+        else:
+            os.environ["CATCHALL_API_KEY"] = self._old_env
+
+    async def test_make_api_upload_requires_key(self) -> None:
+        with patch("server.httpx.AsyncClient") as mock_client:
+            with self.assertRaises(ValueError):
+                await server.make_api_upload(
+                    api_key="",
+                    path="/catchAll/datasets/upload",
+                    file_bytes=b"name\nAcme\n",
+                    data={"name": "ds"},
+                )
+        mock_client.assert_not_called()
+
+    async def test_make_api_upload_sends_multipart(self) -> None:
+        class UploadDummyClient:
+            def __init__(self) -> None:
+                self.post_kwargs: dict | None = None
+
+            def __call__(self, *args, **kwargs):
+                return self
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, path, headers=None, files=None, data=None):
+                self.post_kwargs = {
+                    "path": path,
+                    "headers": headers,
+                    "files": files,
+                    "data": data,
+                }
+                return DummyResponse({"dataset_id": "ds-1"})
+
+        client = UploadDummyClient()
+        with patch("server.httpx.AsyncClient", side_effect=client):
+            result = await server.make_api_upload(
+                api_key="key",
+                path="/catchAll/datasets/upload",
+                file_bytes=b"name\nAcme\n",
+                data={"name": "ds"},
+            )
+
+        self.assertEqual(result, {"dataset_id": "ds-1"})
+        assert client.post_kwargs is not None
+        self.assertEqual(client.post_kwargs["path"], "/catchAll/datasets/upload")
+        self.assertEqual(client.post_kwargs["headers"]["x-api-key"], "key")
+        # No manual Content-Type: httpx must set the multipart boundary itself.
+        self.assertNotIn("Content-Type", client.post_kwargs["headers"])
+        self.assertEqual(
+            client.post_kwargs["files"], {"file": ("upload.csv", b"name\nAcme\n", "text/csv")}
+        )
+        self.assertEqual(client.post_kwargs["data"], {"name": "ds"})
 
 
 if __name__ == "__main__":
