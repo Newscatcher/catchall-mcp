@@ -33,7 +33,7 @@ jobs:
       - name: Install test dependencies
         run: |
           pip install -r requirements-test.txt
-          pip install pytest-cov
+          pip install pytest-cov allure-pytest
 
       - name: Run integration tests against prod
         env:
