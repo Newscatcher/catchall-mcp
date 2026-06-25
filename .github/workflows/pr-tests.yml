@@ -10,6 +10,11 @@ jobs:
     name: Run integration tests against PR code
     runs-on: ubuntu-latest
 
+    env:
+      ALLURE_ENDPOINT: ${{ secrets.ALLURE_ENDPOINT }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_PROJECT_ID: ${{ secrets.ALLURE_PROJECT_ID }}
+
     steps:
       - name: Checkout PR code
         uses: actions/checkout@v4
@@ -19,13 +24,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install server dependencies
-        run: pip install -r requirements.txt
+      - name: Install allurectl
+        run: |
+          curl -L -o /usr/local/bin/allurectl \
+            https://github.com/allure-framework/allurectl/releases/latest/download/allurectl_linux_amd64
+          chmod +x /usr/local/bin/allurectl
 
-      - name: Install test dependencies
-        run: pip install -r requirements-test.txt
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-test.txt
+          pip install pytest-cov
 
-      - name: Start MCP server from PR code
+      - name: Start MCP server
         env:
           CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
         run: |
@@ -45,7 +56,35 @@ jobs:
           MCP_SERVER_URL: http://localhost:8000/mcp
           CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
         run: |
-          pytest tests/integration/ -v -s
+          set +e
+          pytest tests/integration/ -v -s \
+            --alluredir=allure-results \
+            --cov=. --cov-report=html:coverage-html --cov-report=term
+          PYTEST_EXIT=$?
+          set -e
+
+          COV=$(coverage report 2>/dev/null | tail -1 | grep -oE '[0-9]+%' | tail -1)
+          CU_ID=$(echo "${{ github.head_ref }}" | grep -oE 'CU-[a-z0-9]+' | head -1 | sed 's/CU-//')
+
+          {
+            echo "Source.Branch=${{ github.head_ref }}"
+            echo "Target.Branch=${{ github.base_ref }}"
+            echo "Pipeline.URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Pull.Request.URL=${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+            echo "Code.Coverage=${COV}"
+            if [ -n "${CU_ID}" ]; then
+              echo "ClickUp.Task=https://app.clickup.com/t/${CU_ID}"
+            fi
+          } > allure-results/environment.properties
+
+          if [ -d coverage-html ]; then
+            tar -czf allure-results/coverage-report.tar.gz -C coverage-html . || echo "coverage archive skipped"
+          fi
+
+          allurectl upload allure-results \
+            --launch-name "CATCHALL-MCP PR-${{ github.event.pull_request.number }} ${{ github.head_ref }} into ${{ github.base_ref }}"
+
+          exit $PYTEST_EXIT
 
       - name: Stop server
         if: always()

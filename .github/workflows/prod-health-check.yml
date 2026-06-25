@@ -2,13 +2,18 @@ name: Prod Health Check
 
 on:
   schedule:
-    - cron: "0 9 * * *"  # Every day at 9:00 AM UTC
-  workflow_dispatch:       # Manual trigger from GitHub UI
+    - cron: "0 9 * * *"
+  workflow_dispatch:
 
 jobs:
   prod-health-check:
     name: Test live production MCP server
     runs-on: ubuntu-latest
+
+    env:
+      ALLURE_ENDPOINT: ${{ secrets.ALLURE_ENDPOINT }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
+      ALLURE_PROJECT_ID: ${{ secrets.ALLURE_PROJECT_ID }}
 
     steps:
       - name: Checkout code
@@ -19,15 +24,45 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install allurectl
+        run: |
+          curl -L -o /usr/local/bin/allurectl \
+            https://github.com/allure-framework/allurectl/releases/latest/download/allurectl_linux_amd64
+          chmod +x /usr/local/bin/allurectl
+
       - name: Install test dependencies
-        run: pip install -r requirements-test.txt
+        run: |
+          pip install -r requirements-test.txt
+          pip install pytest-cov
 
       - name: Run integration tests against prod
         env:
           MCP_SERVER_URL: https://catchall-mcp.newscatcherapi.com/mcp
           CATCHALL_API_KEY: ${{ secrets.CATCHALL_API_KEY }}
         run: |
-          pytest tests/integration/ -v -s
+          set +e
+          pytest tests/integration/ -v -s \
+            --alluredir=allure-results \
+            --cov=. --cov-report=html:coverage-html --cov-report=term
+          PYTEST_EXIT=$?
+          set -e
+
+          COV=$(coverage report 2>/dev/null | tail -1 | grep -oE '[0-9]+%' | tail -1)
+
+          {
+            echo "Environment=production"
+            echo "Pipeline.URL=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Code.Coverage=${COV}"
+          } > allure-results/environment.properties
+
+          if [ -d coverage-html ]; then
+            tar -czf allure-results/coverage-report.tar.gz -C coverage-html . || echo "coverage archive skipped"
+          fi
+
+          allurectl upload allure-results \
+            --launch-name "CATCHALL-MCP PROD health-check ${{ github.run_id }}"
+
+          exit $PYTEST_EXIT
 
       - name: Notify on failure
         if: failure()
