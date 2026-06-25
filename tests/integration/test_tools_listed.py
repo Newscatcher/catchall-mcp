@@ -66,6 +66,9 @@ EXPECTED_TOOLS = {
     # base64), never a server-side file path — safe for a hosted server.
     "create_dataset_from_csv",
     "append_csv_to_dataset",
+    # CSV download tools (v1.6.3)
+    "pull_job_csv",
+    "pull_monitor_csv",
     # Entity tools
     "create_entity",
     "list_entities",
@@ -141,3 +144,39 @@ async def test_csv_upload_tool_schemas(mcp):
     required = append.inputSchema.get("required", [])
     assert {"dataset_id", "file"} <= set(props)
     assert "dataset_id" in required and "file" in required
+
+
+@pytest.mark.asyncio
+async def test_entity_tools_have_external_entity_id(mcp):
+    """v1.6.3: create_entity and update_entity must expose external_entity_id."""
+    result = await mcp.list_tools()
+    tools = {t.name: t for t in result.tools}
+
+    for tool_name in ("create_entity", "update_entity"):
+        tool = tools.get(tool_name)
+        assert tool is not None, f"{tool_name} not found"
+        props = tool.inputSchema.get("properties", {})
+        assert "external_entity_id" in props, (
+            f"{tool_name} missing 'external_entity_id' parameter (required by 1.6.3)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_csv_download_tool_schemas(mcp):
+    """v1.6.3: pull_job_csv and pull_monitor_csv must be present with correct required params."""
+    result = await mcp.list_tools()
+    tools = {t.name: t for t in result.tools}
+
+    job_csv = tools.get("pull_job_csv")
+    assert job_csv is not None, "pull_job_csv not found"
+    props = job_csv.inputSchema.get("properties", {})
+    required = job_csv.inputSchema.get("required", [])
+    assert "job_id" in props, "pull_job_csv missing 'job_id'"
+    assert "job_id" in required, "pull_job_csv 'job_id' should be required"
+
+    mon_csv = tools.get("pull_monitor_csv")
+    assert mon_csv is not None, "pull_monitor_csv not found"
+    props = mon_csv.inputSchema.get("properties", {})
+    required = mon_csv.inputSchema.get("required", [])
+    assert "monitor_id" in props, "pull_monitor_csv missing 'monitor_id'"
+    assert "monitor_id" in required, "pull_monitor_csv 'monitor_id' should be required"

@@ -330,9 +330,16 @@ async def make_api_request(
     json_data: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
     require_auth: bool = True,
-) -> dict[str, Any]:
-    """Make an API request to CatchAll API."""
+    return_text: bool = False,
+) -> dict[str, Any] | str:
+    """Make an API request to CatchAll API.
+
+    When ``return_text=True`` the raw response body is returned as a string
+    instead of being JSON-decoded (use for CSV/text download endpoints).
+    """
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if return_text:
+        headers["Accept"] = "text/csv, text/plain, */*"
 
     key = get_api_key(api_key) if require_auth else get_optional_api_key(api_key)
     if key:
@@ -365,6 +372,9 @@ async def make_api_request(
                 error_msg = response.text or f"HTTP {response.status_code}"
 
             raise ValueError(f"API Error ({response.status_code}): {error_msg}")
+
+        if return_text:
+            return response.text
 
         try:
             return response.json()
@@ -709,6 +719,39 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
 
 
 @mcp.tool()
+async def pull_job_csv(job_id: str, api_key: str = "") -> str:
+    """
+    Download a job's results as a CSV file.
+
+    Use when:
+    - You want the full job output as a CSV for offline analysis or export.
+    - Prefer this over `pull_results` when the consumer needs spreadsheet/CSV format.
+
+    Args:
+        job_id: The job ID to download as CSV.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        CSV text with all job result records.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: job not found or no results available yet.
+    """
+    try:
+        return await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/pull/{job_id}/csv",
+            return_text=True,
+        )
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
 async def continue_job(job_id: str, new_limit: int | None = None, api_key: str = "") -> str:
     """
     Expand a job by processing more records beyond the initial limit.
@@ -1021,6 +1064,39 @@ async def pull_monitor_results(monitor_id: str, api_key: str = "") -> str:
             path=f"/catchAll/monitors/pull/{monitor_id}",
         )
         return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
+@mcp.tool()
+async def pull_monitor_csv(monitor_id: str, api_key: str = "") -> str:
+    """
+    Download the latest monitor run's results as a CSV file.
+
+    Use when:
+    - You want the most recent monitor run output as a CSV for offline analysis or export.
+    - Prefer this over `pull_monitor_results` when the consumer needs spreadsheet/CSV format.
+
+    Args:
+        monitor_id: The monitor ID to download results for.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+
+    Returns:
+        CSV text with all records from the latest monitor run.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: monitor not found or no results available yet.
+    """
+    try:
+        return await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path=f"/catchAll/monitors/pull/{monitor_id}/csv",
+            return_text=True,
+        )
     except ValueError as e:
         return f"Error: {str(e)}"
     except Exception as e:
@@ -2259,6 +2335,7 @@ async def create_entity(
     api_key: str = "",
     entity_type: str = "",
     description: str = "",
+    external_entity_id: str | None = None,
     additional_attributes: dict[str, Any] | None = None,
 ) -> str:
     """
@@ -2269,6 +2346,8 @@ async def create_entity(
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         entity_type: Optional entity type: 'company' (default) or 'person'.
         description: Optional description of the entity.
+        external_entity_id: Optional customer-supplied identifier linking this entity to
+            an external system's record (new in 1.6.3).
         additional_attributes: Optional structured attributes. For companies, use
             `{"company_attributes": {"alternative_names": [...], "domain": "...",
             "key_persons": [...], "description": "..."}}`.
@@ -2286,6 +2365,8 @@ async def create_entity(
             body["entity_type"] = validate_choice(entity_type, ENTITY_TYPES, "entity_type")
         if description:
             body["description"] = description
+        if external_entity_id is not None:
+            body["external_entity_id"] = external_entity_id
         if additional_attributes is not None:
             body["additional_attributes"] = additional_attributes
         result = await make_api_request(
@@ -2446,16 +2527,19 @@ async def update_entity(
     api_key: str = "",
     name: str | None = None,
     description: str | None = None,
+    external_entity_id: str | None = None,
     additional_attributes: dict[str, Any] | None = None,
 ) -> str:
     """
-    Update an entity's name, description, and/or attributes.
+    Update an entity's name, description, external_entity_id, and/or attributes.
 
     Args:
         entity_id: The entity ID to update.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         name: Optional new entity name.
         description: Optional new description.
+        external_entity_id: Optional customer-supplied identifier linking this entity to
+            an external system's record (new in 1.6.3).
         additional_attributes: Optional updated structured attributes
             (see `create_entity` for the company_attributes shape).
 
@@ -2473,6 +2557,8 @@ async def update_entity(
             body["name"] = name
         if description is not None:
             body["description"] = description
+        if external_entity_id is not None:
+            body["external_entity_id"] = external_entity_id
         if additional_attributes is not None:
             body["additional_attributes"] = additional_attributes
         result = await make_api_request(
