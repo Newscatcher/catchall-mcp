@@ -34,7 +34,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           pip install -r requirements-test.txt
-          pip install pytest-cov
+          pip install pytest-cov allure-pytest
 
       - name: Start MCP server
         env:
