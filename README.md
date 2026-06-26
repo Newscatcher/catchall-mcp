@@ -172,6 +172,11 @@ claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mc
 - `page_size` range is `1..1000`.
 - `pull_results` response includes `error` (failed jobs) and `limit` (applied job limit).
 
+> **MCP-only sentinel:** `submit_query.limit <= 0` causes the MCP to omit the field from the
+> REST request, letting the API apply your plan's default. The REST API itself has no such
+> sentinel — you simply omit the field. This only matters when porting code between the MCP
+> and the REST API directly.
+
 ## API-Enforced Monitor Constraints
 
 - `create_monitor.backfill=true`: reference job `end_date` must be within the last 7 days.
