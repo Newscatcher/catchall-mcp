@@ -76,8 +76,8 @@ def validate_new_limit(new_limit: int) -> None:
         raise ValueError("new_limit must be >= 1.")
 
 
-def validate_monitor_limit(limit: int) -> None:
-    """Validate monitor run limit."""
+def validate_limit(limit: int) -> None:
+    """Validate that a limit value is within the allowed range (minimum 10)."""
     if limit < 10:
         raise ValueError("limit must be >= 10.")
 

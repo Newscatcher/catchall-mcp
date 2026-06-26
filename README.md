@@ -166,16 +166,11 @@ claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mc
 
 ## Limit vs Page Size
 
-- `limit` (`submit_query`, `continue_job`) controls how many records are processed and therefore affects cost.
+- `limit` (`submit_query`, `continue_job`) controls how many records are processed and therefore affects cost. If provided, must be >= 10. Omit to retrieve everything up to your plan's maximum.
 - `page_size` (`pull_results`, `list_user_jobs`) controls pagination only and does not affect processing cost.
 - `pull_results.page_size` default is `100`.
 - `page_size` range is `1..1000`.
 - `pull_results` response includes `error` (failed jobs) and `limit` (applied job limit).
-
-> **MCP-only sentinel:** `submit_query.limit <= 0` causes the MCP to omit the field from the
-> REST request, letting the API apply your plan's default. The REST API itself has no such
-> sentinel — you simply omit the field. This only matters when porting code between the MCP
-> and the REST API directly.
 
 ## API-Enforced Monitor Constraints
 

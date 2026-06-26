@@ -43,7 +43,7 @@ from validators import (
     validate_enrichment_definitions,
     validate_http_method,
     validate_mode,
-    validate_monitor_limit,
+    validate_limit,
     validate_new_limit,
     validate_page_params,
     validate_sort,
@@ -446,7 +446,7 @@ async def submit_query(
     query: str,
     api_key: str = "",
     context: str = "",
-    limit: int = 0,
+    limit: int | None = None,
     start_date: str = "",
     end_date: str = "",
     validators: list[ValidatorDefinition] | str | None = None,
@@ -488,9 +488,8 @@ async def submit_query(
     - Discovery dates and extracted event dates can differ. For event-time accuracy, use event-focused validators/enrichments and verify `event_date` in pulled results.
     - `end_date` must be after `start_date`.
     - Dates outside your plan lookback limits return API 400.
-    - `limit` controls processed record count (cost-affecting). **MCP-specific sentinel:**
-      pass `limit <= 0` (or omit it) to leave the field out of the request entirely and let
-      the API apply your plan's default.
+    - `limit` controls processed record count (cost-affecting). Omit it to retrieve everything
+      up to your plan's maximum. If provided, must be >= 10.
     - `validators` / `enrichments` may be passed either as arrays or as JSON-string arrays (for client compatibility).
     - `validators[].type` must be `boolean` (if omitted, it defaults to `boolean`).
     - `enrichments[].type` supported values: text, number, date, option, url, company.
@@ -510,9 +509,8 @@ async def submit_query(
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize (for example, target entities,
             event types, and specific data points you want captured in enrichments).
-        limit: Optional processing cap; affects cost. Pass `0` or any negative value to
-            omit the field and let the API apply your plan's default (MCP sentinel — the
-            REST API simply omits the field instead).
+        limit: Optional processing cap (minimum 10); affects cost. Omit to retrieve everything
+            up to your plan's maximum.
         start_date: Optional ISO 8601 UTC start of search window.
         end_date: Optional ISO 8601 UTC end of search window.
         validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
@@ -561,7 +559,8 @@ async def submit_query(
         body: dict[str, Any] = {"query": query}
         if context:
             body["context"] = context
-        if limit > 0:
+        if limit is not None:
+            validate_limit(limit)
             body["limit"] = limit
         if start_date:
             body["start_date"] = start_date
@@ -1027,7 +1026,7 @@ async def create_monitor(
         if webhook_ids:
             body["webhook_ids"] = webhook_ids
         if limit is not None:
-            validate_monitor_limit(limit)
+            validate_limit(limit)
             body["limit"] = limit
         if project_id:
             body["project_id"] = project_id
@@ -1268,7 +1267,7 @@ async def update_monitor(
         if webhook_ids is not None:
             body["webhook_ids"] = webhook_ids
         if limit is not None:
-            validate_monitor_limit(limit)
+            validate_limit(limit)
             body["limit"] = limit
 
         result = await make_api_request(
