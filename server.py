@@ -488,7 +488,9 @@ async def submit_query(
     - Discovery dates and extracted event dates can differ. For event-time accuracy, use event-focused validators/enrichments and verify `event_date` in pulled results.
     - `end_date` must be after `start_date`.
     - Dates outside your plan lookback limits return API 400.
-    - `limit` controls processed record count (cost-affecting). In this MCP, `limit <= 0` means the field is omitted and API defaults apply.
+    - `limit` controls processed record count (cost-affecting). **MCP-specific sentinel:**
+      pass `limit <= 0` (or omit it) to leave the field out of the request entirely and let
+      the API apply your plan's default.
     - `validators` / `enrichments` may be passed either as arrays or as JSON-string arrays (for client compatibility).
     - `validators[].type` must be `boolean` (if omitted, it defaults to `boolean`).
     - `enrichments[].type` supported values: text, number, date, option, url, company.
@@ -508,7 +510,9 @@ async def submit_query(
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize (for example, target entities,
             event types, and specific data points you want captured in enrichments).
-        limit: Optional processing cap; affects cost.
+        limit: Optional processing cap; affects cost. Pass `0` or any negative value to
+            omit the field and let the API apply your plan's default (MCP sentinel — the
+            REST API simply omits the field instead).
         start_date: Optional ISO 8601 UTC start of search window.
         end_date: Optional ISO 8601 UTC end of search window.
         validators: Optional custom boolean validators (`name`, `description`, `type`), as array or JSON-string array.
