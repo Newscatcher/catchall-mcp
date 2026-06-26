@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — CatchAll API v1.6.1 sync (2026-06-10)
+## [1.6.3] — 2026-06-25
+
+### Added
+- `pull_job_csv` tool — `GET /catchAll/pull/{job_id}/csv`. Downloads a completed job's
+  results as a CSV file. Prefer this over `pull_results` when the consumer needs
+  spreadsheet/CSV format instead of paginated JSON.
+- `pull_monitor_csv` tool — `GET /catchAll/monitors/pull/{monitor_id}/csv`. Downloads the
+  most recent monitor run's results as a CSV file.
+- `external_entity_id` parameter on `create_entity` and `update_entity` — optional
+  customer-supplied identifier that links the entity to a record in an external system.
+
+### Changed
+- `make_api_request` gained a `return_text` flag: when `True`, the raw response body is
+  returned as a string instead of being JSON-decoded (used by the two new CSV download
+  tools; also sets `Accept: text/csv, text/plain, */*`).
+
+### Tests
+- Integration test `test_entity_tools_have_external_entity_id` — asserts both
+  `create_entity` and `update_entity` expose the new `external_entity_id` parameter.
+- Integration test `test_csv_download_tool_schemas` — asserts `pull_job_csv` and
+  `pull_monitor_csv` are registered with the correct required parameters.
+- `EXPECTED_TOOLS` set in `test_tools_listed.py` updated to include the two new tools.
+
+---
+
+## [1.6.1] — 2026-06-10
 
 > **Note:** this entry re-adds CSV upload tools that were deliberately removed in
 > `cd86a40` ("unsafe for a hosted server"). The unsafe part was the `file_path`
@@ -50,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — feat/v1.53.0_release
+## [1.5.3]
 
 ### Added
 - Full sync to **CatchAll API v1.5.3** — server now exposes **57 tools** (up from 22)
