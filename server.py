@@ -509,6 +509,9 @@ async def submit_query(
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         context: Optional guidance on what to prioritize (for example, target entities,
             event types, and specific data points you want captured in enrichments).
+            If a company dataset will be attached, note that entity-relevance
+            validators (e.g. `company_is_primary_subject`) will be auto-generated —
+            do not ask for them here. Do not mention things like "company list will be attached".
         limit: Optional processing cap (minimum 10); affects cost. Omit to retrieve everything
             up to your plan's maximum.
         start_date: Optional ISO 8601 UTC start of search window.
@@ -634,7 +637,8 @@ async def initialize_query(
             enrichments, and dates align with your target data points. If a company
             dataset will be attached in `submit_query`, note that entity-relevance
             validators (e.g. `company_is_primary_subject`) will be auto-generated —
-            do not ask for them here. Focus on the event or topic only.
+            do not ask for them here. Do not mention things like "company list will be attached".
+            Focus on the event or topic only.
         fetch_all_watchlist_news: When `True`, signals that the subsequent job will
             retrieve all news for connected watchlist entities without topic filtering.
             Pass this when you intend to use `fetch_all_watchlist_news=True` in
