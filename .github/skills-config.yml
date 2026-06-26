@@ -1,0 +1,34 @@
+# Skills to watch for MCP-related updates.
+# When a change is merged to the catchall-mcp main branch, the skills-update
+# agent fetches every file listed here, passes them to Claude along with the
+# CHANGELOG / README / git diff, and proposes a PR if anything needs updating.
+#
+# To track a new skill: add an entry below.
+# To stop tracking a skill: comment out or remove its entry.
+
+skills_repo: Newscatcher/newscatcher-catchall-integrations
+skills_base_branch: main
+
+tracked_skills:
+  - path: skills/general-use-case
+    files:
+      - SKILL.md
+      - references/VALIDATORS.md
+      - references/MONITOR-SCHEDULING.md
+
+  # Uncomment when these skills need MCP-change tracking:
+  # - path: skills/fundraising-catchall
+  #   files:
+  #     - SKILL.md
+
+  # - path: skills/m&a-catchall
+  #   files:
+  #     - SKILL.md
+
+  # - path: skills/competitor-snapshot-catchall
+  #   files:
+  #     - SKILL.md
+
+  # - path: skills/vc-pack-catchall
+  #   files:
+  #     - SKILL.md

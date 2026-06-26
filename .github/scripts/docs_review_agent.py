@@ -20,6 +20,7 @@ Optional:
 """
 
 import base64
+import json
 import os
 import subprocess
 import sys
@@ -85,8 +86,41 @@ def read_file(path: str) -> str:
         return f"[File not found: {path}]"
 
 
+def get_pr_diff(pr_number: str) -> str:
+    """Fetch commits + unified diff for a specific merged PR via the gh CLI.
+    Works for any PR regardless of local git history depth."""
+    try:
+        meta = json.loads(subprocess.check_output(
+            ["gh", "pr", "view", pr_number, "--json", "number,title,commits"],
+            text=True, stderr=subprocess.DEVNULL,
+        ))
+        commit_lines = "\n".join(
+            f"{c['oid'][:7]} {c['messageHeadline']}"
+            for c in meta.get("commits", [])
+        )
+        diff = subprocess.check_output(
+            ["gh", "pr", "diff", pr_number],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+    except subprocess.CalledProcessError as exc:
+        return f"[Error fetching PR {pr_number}: {exc}]"
+
+    if len(diff) > MAX_DIFF_CHARS:
+        diff = diff[:MAX_DIFF_CHARS] + "\n... [diff truncated]"
+
+    return (
+        f"PR #{meta['number']}: {meta['title']}\n\n"
+        f"Commits:\n{commit_lines}\n\nDiff:\n{diff}"
+    )
+
+
 def get_git_diff() -> str:
-    """Return a human-readable summary of commits + unified diff for this push."""
+    """Return commits + unified diff — from a specific PR if PR_NUMBER is set,
+    otherwise from the current push (GIT_SHA_BEFORE → GIT_SHA_AFTER)."""
+    pr_number = os.environ.get("PR_NUMBER", "").strip()
+    if pr_number:
+        return get_pr_diff(pr_number)
+
     before = os.environ.get("GIT_SHA_BEFORE", "").strip()
     after = os.environ.get("GIT_SHA_AFTER", "HEAD").strip()
 
@@ -97,13 +131,11 @@ def get_git_diff() -> str:
     try:
         log = subprocess.check_output(
             ["git", "log", "--oneline", f"{before}..{after}"],
-            text=True,
-            stderr=subprocess.DEVNULL,
+            text=True, stderr=subprocess.DEVNULL,
         ).strip()
         diff = subprocess.check_output(
             ["git", "diff", f"{before}..{after}"],
-            text=True,
-            stderr=subprocess.DEVNULL,
+            text=True, stderr=subprocess.DEVNULL,
         )
     except subprocess.CalledProcessError as exc:
         return f"[git error: {exc}]"

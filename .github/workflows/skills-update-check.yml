@@ -1,4 +1,4 @@
-name: Review Docs After Merge to Main
+name: Review Skills After Merge to Main
 
 on:
   push:
@@ -12,8 +12,8 @@ on:
         type: string
 
 jobs:
-  docs-review:
-    name: Check if MCP docs page needs updating
+  skills-review:
+    name: Check if skill files need updating
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,14 +31,14 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install anthropic requests
+        run: pip install anthropic requests pyyaml
 
-      - name: Run documentation review agent
+      - name: Run skills review agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DOCS_GITHUB_TOKEN: ${{ secrets.DOCS_GITHUB_TOKEN }}
+          SKILLS_GITHUB_TOKEN: ${{ secrets.SKILLS_GITHUB_TOKEN }}
           GIT_SHA_BEFORE: ${{ github.event.before }}
           GIT_SHA_AFTER: ${{ github.sha }}
           PR_NUMBER: ${{ inputs.pr_number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: python .github/scripts/docs_review_agent.py
+        run: python .github/scripts/skills_review_agent.py
