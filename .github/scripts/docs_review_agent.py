@@ -20,9 +20,7 @@ Optional:
 """
 
 import base64
-import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -40,6 +38,42 @@ MAX_DIFF_CHARS = 15_000
 MAX_README_CHARS = 5_000
 
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# Tool schema — Claude must call this instead of returning free-form JSON.
+# Using tool use avoids any text parsing and preserves backticks/code fences
+# inside the updated_content string exactly as Claude wrote them.
+DOCS_DECISION_TOOL = {
+    "name": "submit_docs_decision",
+    "description": "Submit the documentation review decision.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "update_needed": {
+                "type": "boolean",
+                "description": "True if the docs page needs updating, false otherwise.",
+            },
+            "reason": {
+                "type": "string",
+                "description": "One or two sentences explaining the decision.",
+            },
+            "updated_content": {
+                "type": "string",
+                "description": (
+                    "The complete updated MDX file content. "
+                    "Required when update_needed is true; omit or pass empty string otherwise."
+                ),
+            },
+            "pr_summary": {
+                "type": "string",
+                "description": (
+                    "Bullet-point summary of what changed and why, for the PR description. "
+                    "Required when update_needed is true; omit or pass empty string otherwise."
+                ),
+            },
+        },
+        "required": ["update_needed", "reason"],
+    },
+}
 
 # ── File helpers ───────────────────────────────────────────────────────────────
 
@@ -190,19 +224,6 @@ def create_docs_pr(
     return pr["html_url"]
 
 
-# ── Claude helpers ─────────────────────────────────────────────────────────────
-
-
-def extract_json(text: str) -> dict:
-    """Extract the JSON object from Claude's response, stripping markdown fences."""
-    text = re.sub(r"```(?:json)?\s*", "", text).strip()
-    start = text.find("{")
-    end = text.rfind("}") + 1
-    if start < 0 or end <= start:
-        raise ValueError(f"No JSON object found in Claude response:\n{text[:500]}")
-    return json.loads(text[start:end])
-
-
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 
@@ -244,12 +265,24 @@ def main() -> None:
         model=CLAUDE_MODEL,
         max_tokens=8096,
         system=system_prompt,
+        tools=[DOCS_DECISION_TOOL],
+        tool_choice={"type": "tool", "name": "submit_docs_decision"},
         messages=[{"role": "user", "content": user_message}],
     )
-    raw = response.content[0].text
-    print(f"\nClaude response:\n{raw}\n")
 
-    result = extract_json(raw)
+    # Extract the tool input — the SDK returns it as a plain dict, so all
+    # string values (including MDX with backtick code fences) are preserved.
+    result = None
+    for block in response.content:
+        if block.type == "tool_use" and block.name == "submit_docs_decision":
+            result = block.input
+            break
+
+    if result is None:
+        sys.exit("ERROR: Claude did not call the expected tool.")
+
+    print(f"\nDecision: update_needed={result['update_needed']}")
+    print(f"Reason: {result.get('reason', '—')}\n")
 
     if result.get("update_needed") and result.get("updated_content"):
         print("Update needed — creating PR in docs repo…")
