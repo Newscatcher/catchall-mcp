@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - CU-86d3fdqfw_MCP-Update-the-SKILL-and-MCP-with-improvements-Artems-commenbts_Maksym-Sugonyaka  # remove before merge
   workflow_dispatch:
 
 jobs:
