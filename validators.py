@@ -27,6 +27,8 @@ DATASET_SORT_BY = {"name", "created_at", "status"}
 ENTITY_STATUSES = {"pending", "enriching", "ready", "failed"}
 ENTITY_TYPES = {"company", "person"}
 ENTITY_SORT_BY = {"created_at", "name", "status"}
+# EntityAssociationType: how strongly a watchlist entity must appear in the event.
+ED_ASSOCIATION_TYPES = {"event_associated", "mention"}
 
 
 def validate_choice(value: str, allowed: set[str], field_name: str) -> str:

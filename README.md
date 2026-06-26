@@ -15,6 +15,7 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `list_user_jobs` | `GET` | `/catchAll/jobs/user` |
 | `get_job_status` | `GET` | `/catchAll/status/{job_id}` |
 | `pull_results` | `GET` | `/catchAll/pull/{job_id}` |
+| `pull_job_csv` | `GET` | `/catchAll/pull/{job_id}/csv` |
 | `delete_job` | `DELETE` | `/catchAll/jobs/{job_id}` |
 
 ### Monitors
@@ -28,6 +29,7 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `list_monitor_jobs` | `GET` | `/catchAll/monitors/{monitor_id}/jobs` |
 | `get_monitor_status` | `GET` | `/catchAll/monitors/{monitor_id}/status` |
 | `pull_monitor_results` | `GET` | `/catchAll/monitors/pull/{monitor_id}` |
+| `pull_monitor_csv` | `GET` | `/catchAll/monitors/pull/{monitor_id}/csv` |
 | `enable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/enable` |
 | `disable_monitor` | `POST` | `/catchAll/monitors/{monitor_id}/disable` |
 
@@ -93,6 +95,10 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `get_entity` | `GET` | `/catchAll/entities/{entity_id}` |
 | `update_entity` | `PATCH` | `/catchAll/entities/{entity_id}` |
 | `delete_entity` | `DELETE` | `/catchAll/entities/{entity_id}` |
+
+> **`external_entity_id` (v1.6.3):** `create_entity` and `update_entity` accept an optional
+> `external_entity_id` string — a customer-supplied identifier that links the entity to a
+> record in an external system.
 
 ### User & Meta
 
