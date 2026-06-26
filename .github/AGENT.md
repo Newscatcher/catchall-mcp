@@ -61,31 +61,9 @@ When in doubt, **do not update** — conservative is correct here.
 
 ---
 
-## Output Format
+## Output
 
-Respond with **only** a JSON object — no prose, no markdown fences, no extra text.
-
-If an update is needed:
-
-```json
-{
-  "update_needed": true,
-  "reason": "One or two sentences explaining which specific change requires a docs update.",
-  "updated_content": "<<full updated MDX file content>>",
-  "pr_summary": "Bullet-point summary of what changed and why, suitable for a PR description."
-}
-```
-
-If no update is needed:
-
-```json
-{
-  "update_needed": false,
-  "reason": "One sentence explaining why no docs update is required.",
-  "updated_content": null,
-  "pr_summary": null
-}
-```
+Call the `submit_docs_decision` tool with your decision. The tool schema defines all required fields.
 
 ---
 
