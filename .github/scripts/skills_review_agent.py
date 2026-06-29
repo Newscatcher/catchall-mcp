@@ -177,15 +177,30 @@ def _gh_headers(token: str) -> dict:
     }
 
 
+def _raise(r: requests.Response) -> None:
+    """Raise with GitHub's error body included so the log tells us exactly why."""
+    if not r.ok:
+        raise requests.HTTPError(
+            f"{r.status_code} {r.reason} — {r.text[:500]}",
+            response=r,
+        )
+
+
 def gh_get(url: str, token: str) -> requests.Response:
     r = requests.get(url, headers=_gh_headers(token), timeout=30)
-    r.raise_for_status()
+    _raise(r)
     return r
 
 
 def gh_post(url: str, token: str, payload: dict) -> requests.Response:
     r = requests.post(url, json=payload, headers=_gh_headers(token), timeout=30)
-    r.raise_for_status()
+    _raise(r)
+    return r
+
+
+def gh_put(url: str, token: str, payload: dict) -> requests.Response:
+    r = requests.put(url, json=payload, headers=_gh_headers(token), timeout=30)
+    _raise(r)
     return r
 
 
@@ -222,8 +237,8 @@ def create_skills_pr(
     trigger_sha: str,
 ) -> str:
     """
-    Create a branch with a single commit touching all updated files, then open a PR.
-    Uses the Git Trees API so all changes land in one clean commit.
+    Create a branch, commit each updated file via the Contents API, then open a PR.
+    Uses PUT /contents/{path} (same as the docs script) — one commit per file.
     Returns the PR HTML URL.
     """
     branch_name = f"mcp-skills-update-{trigger_sha[:7]}"
@@ -236,61 +251,39 @@ def create_skills_pr(
 
     # Latest commit SHA on the base branch
     ref_data = gh_get(f"{base_url}/git/ref/heads/{base_branch}", token).json()
-    base_commit_sha = ref_data["object"]["sha"]
+    base_sha = ref_data["object"]["sha"]
 
-    # Base tree SHA
-    commit_data = gh_get(f"{base_url}/git/commits/{base_commit_sha}", token).json()
-    base_tree_sha = commit_data["tree"]["sha"]
-
-    # Create a blob for each updated file and build the tree
-    tree_items = []
-    for update in file_updates:
-        full_path = f"{update['skill_path']}/{update['file_name']}"
-        blob = gh_post(
-            f"{base_url}/git/blobs",
-            token,
-            {"content": update["updated_content"], "encoding": "utf-8"},
-        ).json()
-        tree_items.append({
-            "path": full_path,
-            "mode": "100644",
-            "type": "blob",
-            "sha": blob["sha"],
-        })
-
-    new_tree = gh_post(
-        f"{base_url}/git/trees",
-        token,
-        {"base_tree": base_tree_sha, "tree": tree_items},
-    ).json()
-
-    # Build a commit message that lists each changed file
-    file_lines = "\n".join(
-        f"- {u['skill_path']}/{u['file_name']}: {u['change_summary']}"
-        for u in file_updates
-    )
-    commit_message = (
-        f"docs(skills): update skill files after MCP changes\n\n"
-        f"Triggered by {trigger_sha[:7]} in catchall-mcp.\n\n"
-        f"{file_lines}"
-    )
-
-    new_commit = gh_post(
-        f"{base_url}/git/commits",
-        token,
-        {
-            "message": commit_message,
-            "tree": new_tree["sha"],
-            "parents": [base_commit_sha],
-        },
-    ).json()
-
-    # Create the branch pointing at the new commit
+    # Create the new branch
     gh_post(
         f"{base_url}/git/refs",
         token,
-        {"ref": f"refs/heads/{branch_name}", "sha": new_commit["sha"]},
+        {"ref": f"refs/heads/{branch_name}", "sha": base_sha},
     )
+
+    # Commit each file individually via the Contents API
+    for update in file_updates:
+        full_path = f"{update['skill_path']}/{update['file_name']}"
+
+        # Fetch the current file SHA on the new branch (required by the PUT endpoint)
+        file_data = gh_get(
+            f"{base_url}/contents/{full_path}?ref={branch_name}", token
+        ).json()
+
+        gh_put(
+            f"{base_url}/contents/{full_path}",
+            token,
+            {
+                "message": (
+                    f"docs(skills): {update['change_summary']}\n\n"
+                    f"Triggered by {trigger_sha[:7]} in catchall-mcp."
+                ),
+                "content": base64.b64encode(
+                    update["updated_content"].encode("utf-8")
+                ).decode(),
+                "sha": file_data["sha"],
+                "branch": branch_name,
+            },
+        )
 
     # Open the PR
     pr_body = (
