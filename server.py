@@ -2399,8 +2399,7 @@ async def create_entity(
     Create a single entity (a company or person).
 
     ``name`` is required plus at least one identifying
-    field: either a ``additional_attributes.company_attributes.description`` or a
-    ``additional_attributes.company_attributes.domain``.
+    field: either ``description`` or ``additional_attributes.company_attributes.domain``.
 
     Args:
         name: Entity name (required).
@@ -2506,9 +2505,8 @@ async def create_entities_batch(
 
     Args:
         entities: A list of entity objects. Each object requires a ``name``
-            plus one identifying field for good enrichment: either a
-            ``"additional_attributes": {"company_attributes": {"description": "..."}}`` or a
-            ``"additional_attributes": {"company_attributes": {"domain": "..."}}``.
+            plus one identifying field for good enrichment: either a top-level
+            ``"description"`` or ``"additional_attributes": {"company_attributes": {"domain": "..."}}``.
             Also accepts optional ``entity_type`` ('company'/'person').
             May also be passed as a JSON-string array.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
