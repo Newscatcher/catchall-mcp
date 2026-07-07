@@ -64,6 +64,13 @@ class TestEnumValidation:
         assert text.startswith("Error:")
         assert "resource_type" in text.lower()
 
+    async def test_invalid_trigger_resource_type(self, mcp):
+        text = call_result_text(await mcp.call_tool(
+            "trigger_webhook",
+            {"webhook_id": "x", "resource_type": "widget", "resource_id": "y"}))
+        assert text.startswith("Error:")
+        assert "resource_type" in text.lower()
+
     async def test_invalid_entity_type(self, mcp):
         text = call_result_text(await mcp.call_tool(
             "create_entity", {"name": "X", "entity_type": "robot"}))

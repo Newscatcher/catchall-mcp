@@ -1895,6 +1895,57 @@ async def get_webhook_history(
         return f"Unexpected error: {str(e)}"
 
 
+@mcp.tool()
+async def trigger_webhook(
+    webhook_id: str,
+    resource_type: str,
+    resource_id: str,
+    api_key: str = "",
+    job_id: str = "",
+) -> str:
+    """
+    Manually trigger webhook delivery for a resource (job/monitor/monitor_group).
+
+    Use when:
+    - You want to (re-)send a webhook delivery on demand instead of waiting for
+      the automatic dispatch — e.g. to replay a missed or failed delivery.
+
+    Args:
+        webhook_id: The webhook ID to deliver through.
+        resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+        resource_id: The ID of the job/monitor/monitor_group to trigger delivery for.
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        job_id: Optional job ID whose payload should be delivered (e.g. a specific
+            monitor run's job). If omitted, the API picks the resource's payload itself.
+
+    Returns:
+        JSON with `success` and `message` ("Webhook trigger dispatched."). The
+        dispatch itself is asynchronous — use `get_webhook_history` to see the
+        delivery outcome for the resource.
+
+    Common API errors:
+        - 403: missing or invalid API key.
+        - 404: webhook or resource not found.
+        - 422: invalid resource_type or malformed IDs.
+    """
+    try:
+        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        params: dict[str, Any] = {"webhook_id": webhook_id}
+        if job_id:
+            params["job_id"] = job_id
+        result = await make_api_request(
+            api_key=api_key,
+            method="POST",
+            path=f"/catchAll/webhook/trigger/{resource_type}/{resource_id}",
+            params=params,
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        return f"Error: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
+
 # ---------------------------------------------------------------------------
 # Dataset tools
 # ---------------------------------------------------------------------------

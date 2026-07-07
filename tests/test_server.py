@@ -679,6 +679,25 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                server.trigger_webhook,
+                {"webhook_id": "wh-1", "resource_type": "job", "resource_id": "job-1"},
+                "POST",
+                "/catchAll/webhook/trigger/job/job-1",
+                None,
+                {"webhook_id": "wh-1"},
+                True,
+            ),
+            (
+                server.trigger_webhook,
+                {"webhook_id": "wh-1", "resource_type": "monitor", "resource_id": "mon-1",
+                 "job_id": "job-9"},
+                "POST",
+                "/catchAll/webhook/trigger/monitor/mon-1",
+                None,
+                {"webhook_id": "wh-1", "job_id": "job-9"},
+                True,
+            ),
+            (
                 server.create_entity,
                 {"name": "Stripe", "entity_type": "company"},
                 "POST",
@@ -868,6 +887,11 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
             ),
             (
                 server.assign_webhook_resource,
+                {"webhook_id": "wh-1", "resource_type": "widget", "resource_id": "r-1"},
+                "resource_type must be one of: job, monitor, monitor_group.",
+            ),
+            (
+                server.trigger_webhook,
                 {"webhook_id": "wh-1", "resource_type": "widget", "resource_id": "r-1"},
                 "resource_type must be one of: job, monitor, monitor_group.",
             ),

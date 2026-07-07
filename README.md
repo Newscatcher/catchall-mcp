@@ -48,6 +48,7 @@ MCP server for the NewsCatcher CatchAll Web Search API.
 | `remove_webhook_resource` | `DELETE` | `/catchAll/webhooks/{webhook_id}/resources/{resource_type}/{resource_id}` |
 | `list_resource_webhooks` | `GET` | `/catchAll/resources/{resource_type}/{resource_id}/webhooks` |
 | `get_webhook_history` | `GET` | `/catchAll/webhook-history` |
+| `trigger_webhook` | `POST` | `/catchAll/webhook/trigger/{resource_type}/{resource_id}` |
 
 ### Projects
 

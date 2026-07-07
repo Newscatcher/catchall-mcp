@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.6.4] — 2026-07-07
+
+### Added
+- `trigger_webhook` tool — `POST /catchAll/webhook/trigger/{resource_type}/{resource_id}`.
+  Manually triggers webhook delivery for a resource (job/monitor/monitor_group).
+  Params: `webhook_id` (required, query), `resource_type` + `resource_id` (required,
+  path), `job_id` (optional, query). Returns `success` and `message`
+  ("Webhook trigger dispatched."); the dispatch is asynchronous — use
+  `get_webhook_history` to see the delivery outcome. `resource_type` is validated
+  client-side against job/monitor/monitor_group.
+
+### Tests
+- Unit request-mapping tests for `trigger_webhook` (minimal and with `job_id`) plus a
+  fail-fast invalid-`resource_type` case in `tests/test_server.py`.
+- Integration schema test `test_trigger_webhook_tool_schema` and `EXPECTED_TOOLS`
+  updated in `tests/integration/test_tools_listed.py`; safe client-side enum test
+  added to the integration surface suite.
+
+---
+
 ## [1.6.3] — 2026-06-25
 
 ### Added
