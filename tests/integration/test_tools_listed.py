@@ -42,6 +42,7 @@ EXPECTED_TOOLS = {
     "remove_webhook_resource",
     "list_resource_webhooks",
     "get_webhook_history",
+    "trigger_webhook",
     # Project tools
     "create_project",
     "list_projects",
@@ -159,6 +160,20 @@ async def test_entity_tools_have_external_entity_id(mcp):
         assert "external_entity_id" in props, (
             f"{tool_name} missing 'external_entity_id' parameter (required by 1.6.3)"
         )
+
+
+@pytest.mark.asyncio
+async def test_trigger_webhook_tool_schema(mcp):
+    """trigger_webhook (POST /catchAll/webhook/trigger/{resource_type}/{resource_id})
+    must be registered with the documented required/optional parameters."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "trigger_webhook"), None)
+    assert tool is not None, "trigger_webhook not found"
+    props = tool.inputSchema.get("properties", {})
+    required = tool.inputSchema.get("required", [])
+    assert {"webhook_id", "resource_type", "resource_id", "job_id"} <= set(props)
+    assert {"webhook_id", "resource_type", "resource_id"} <= set(required)
+    assert "job_id" not in required, "trigger_webhook 'job_id' must stay optional"
 
 
 @pytest.mark.asyncio
