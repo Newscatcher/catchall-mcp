@@ -2,6 +2,37 @@
 
 MCP server for the NewsCatcher CatchAll Web Search API.
 
+## Quick Start — Use Our Hosted Server
+
+You don't need to clone or run this repo to use the MCP — NewsCatcher runs a hosted instance:
+
+```
+https://catchall-mcp.newscatcherapi.com/mcp?apiKey=YOUR_CATCHALL_API_KEY
+```
+
+Get a CatchAll API key at [platform.newscatcherapi.com](https://platform.newscatcherapi.com/), then connect:
+
+```json
+{
+  "mcpServers": {
+    "catchall": {
+      "type": "http",
+      "url": "https://catchall-mcp.newscatcherapi.com/mcp?apiKey=YOUR_CATCHALL_API_KEY"
+    }
+  }
+}
+```
+
+Or via Claude Code CLI:
+
+```bash
+claude mcp add --transport http catchall "https://catchall-mcp.newscatcherapi.com/mcp?apiKey=YOUR_CATCHALL_API_KEY"
+```
+
+Full integration docs: https://www.newscatcherapi.com/docs/web-search-api/integrations/mcp
+
+Prefer to run the server yourself (locally or self-hosted)? See [Running](#running) below.
+
 ## Tool To Endpoint Mapping
 
 ### Jobs
