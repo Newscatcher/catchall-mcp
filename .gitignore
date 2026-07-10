@@ -23,3 +23,5 @@ env/
 dist/
 build/
 *.egg-info/
+/logs.txt
+/test_debug.py
