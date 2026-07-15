@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cursor/plugins/main/schemas/plugin.schema.json",
+  "name": "catchall",
+  "displayName": "CatchAll by NewsCatcher",
+  "description": "Web search API for comprehensive event retrieval: find every relevant event across the open web, not just the top results.",
+  "version": "1.0.0",
+  "author": { "name": "NewsCatcher" },
+  "homepage": "https://www.newscatcherapi.com/web-search-api",
+  "repository": "https://github.com/Newscatcher/catchall-mcp",
+  "category": "Search",
+  "keywords": ["mcp", "web-search", "search", "news", "events", "newscatcher", "catchall"],
+  "mcpServers": {
+    "catchall": {
+      "url": "https://catchall-mcp.newscatcherapi.com/mcp",
+      "headers": { "x-api-key": "YOUR_CATCHALL_API_KEY" }
+    }
+  }
+}
