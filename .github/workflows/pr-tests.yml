@@ -82,7 +82,7 @@ jobs:
           fi
 
           allurectl upload allure-results \
-            --launch-name "CATCHALL-MCP PR-${{ github.event.pull_request.number }} ${{ github.head_ref }} into ${{ github.base_ref }}"
+            --launch-name "CATCHALL-MCP PR-${{ github.event.pull_request.number }} ${{ github.head_ref }} into ${{ github.base_ref }} (run ${{ github.run_id }}.${{ github.run_attempt }})"
 
           exit $PYTEST_EXIT
 
