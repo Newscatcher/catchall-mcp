@@ -265,10 +265,12 @@ class ValidationHelperTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validators.validate_new_limit(0)
 
-    def test_validate_monitor_limit(self) -> None:
-        validators.validate_monitor_limit(10)
+    def test_validate_limit(self) -> None:
+        # Upstream renamed validate_monitor_limit -> validate_limit (the >= 10
+        # contract is shared by monitor and submit limits); same behavior.
+        validators.validate_limit(10)
         with self.assertRaises(ValueError):
-            validators.validate_monitor_limit(9)
+            validators.validate_limit(9)
 
     def test_validate_http_method(self) -> None:
         # v1.5.3: webhook delivery accepts the full HttpMethod enum (the live API
@@ -283,9 +285,18 @@ class ValidationHelperTests(unittest.TestCase):
     def test_validate_choice(self) -> None:
         self.assertEqual(validators.validate_choice("job", validators.MAPPABLE_RESOURCE_TYPES, "rt"), "job")
         self.assertEqual(validators.validate_choice("dataset", validators.PROJECT_RESOURCE_TYPES, "rt"), "dataset")
+        # Webhooks are first-class project resources (ProjectResourceTypeEnum).
+        self.assertEqual(validators.validate_choice("webhook", validators.PROJECT_RESOURCE_TYPES, "rt"), "webhook")
         self.assertEqual(validators.validate_choice("own", validators.OWNERSHIP_VALUES, "ownership"), "own")
         with self.assertRaises(ValueError):
             validators.validate_choice("nope", validators.WEBHOOK_TYPES, "type")
+        # 'test' is a response-only history resource type (manual test
+        # deliveries) and must never be accepted as a mappable resource type.
+        with self.assertRaises(ValueError):
+            validators.validate_choice("test", validators.MAPPABLE_RESOURCE_TYPES, "rt")
+        # 'webhook' is a project resource type but not webhook-mappable.
+        with self.assertRaises(ValueError):
+            validators.validate_choice("webhook", validators.MAPPABLE_RESOURCE_TYPES, "rt")
 
     def test_coerce_csv_file_content(self) -> None:
         # Raw CSV text passes through as utf-8 bytes.
@@ -513,6 +524,25 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                # GET /catchAll/jobs/user `mode` query filter (base|lite).
+                server.list_user_jobs,
+                {"mode": "lite"},
+                "GET",
+                "/catchAll/jobs/user",
+                None,
+                {"page": 1, "page_size": 100, "mode": "lite"},
+                True,
+            ),
+            (
+                server.list_user_jobs,
+                {"mode": "base"},
+                "GET",
+                "/catchAll/jobs/user",
+                None,
+                {"page": 1, "page_size": 100, "mode": "base"},
+                True,
+            ),
+            (
                 server.create_monitor,
                 {"reference_job_id": "job-1", "schedule": "every day at 9 AM UTC"},
                 "POST",
@@ -670,12 +700,65 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                # POST /catchAll/webhooks optional project_id: attach-on-create.
+                server.create_webhook,
+                {"name": "wh", "url": "https://example.com/h", "project_id": "proj-1"},
+                "POST",
+                "/catchAll/webhooks",
+                {"name": "wh", "url": "https://example.com/h", "method": "POST",
+                 "project_id": "proj-1"},
+                None,
+                True,
+            ),
+            (
                 server.assign_webhook_resource,
                 {"webhook_id": "wh-1", "resource_type": "job", "resource_id": "job-1"},
                 "POST",
                 "/catchAll/webhooks/wh-1/resources",
                 {"resource_type": "job", "resource_id": "job-1"},
                 None,
+                True,
+            ),
+            (
+                # Webhooks are first-class project resources.
+                server.add_project_resources,
+                {"project_id": "p-1",
+                 "resources": [{"resource_type": "webhook", "resource_id": "wh-1"}]},
+                "POST",
+                "/catchAll/projects/p-1/resources",
+                {"resources": [{"resource_type": "webhook", "resource_id": "wh-1"}]},
+                None,
+                True,
+            ),
+            (
+                # Detaching a webhook from a project never deletes the webhook.
+                server.remove_project_resource,
+                {"project_id": "p-1", "resource_type": "webhook", "resource_id": "wh-1"},
+                "DELETE",
+                "/catchAll/projects/p-1/resources/webhook/wh-1",
+                None,
+                None,
+                True,
+            ),
+            (
+                # Webhook-history resource mode (unchanged behavior).
+                server.get_webhook_history,
+                {"resource_type": "job", "resource_id": "job-1"},
+                "GET",
+                "/catchAll/webhook-history",
+                None,
+                {"page": 1, "page_size": 50, "resource_type": "job", "resource_id": "job-1"},
+                True,
+            ),
+            (
+                # Webhook-history webhook_id mode (shows manual test deliveries,
+                # recorded with resource_type "test").
+                server.get_webhook_history,
+                {"webhook_id": "wh-1"},
+                "GET",
+                "/catchAll/webhook-history",
+                None,
+                {"page": 1, "page_size": 50, "webhook_id": "wh-1"},
                 True,
             ),
             (
@@ -898,12 +981,39 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
             (
                 server.add_project_resources,
                 {"project_id": "p-1", "resources": [{"resource_type": "widget", "resource_id": "r-1"}]},
-                "resources[0].resource_type must be one of: dataset, job, monitor, monitor_group.",
+                "resources[0].resource_type must be one of: dataset, job, monitor, monitor_group, webhook.",
             ),
             (
                 server.list_user_jobs,
                 {"ownership": "everyone"},
                 "ownership must be one of: all, own, shared.",
+            ),
+            (
+                server.list_user_jobs,
+                {"mode": "turbo"},
+                "mode must be 'lite' or 'base'.",
+            ),
+            (
+                server.get_webhook_history,
+                {"webhook_id": "wh-1", "resource_type": "job", "resource_id": "job-1"},
+                "Provide either webhook_id or resource_type + resource_id, not both.",
+            ),
+            (
+                server.get_webhook_history,
+                {},
+                "Provide either webhook_id, or both resource_type and resource_id.",
+            ),
+            (
+                server.get_webhook_history,
+                {"resource_type": "job"},
+                "Provide either webhook_id, or both resource_type and resource_id.",
+            ),
+            (
+                # 'test' is a response-only history resource type — never a
+                # valid request-side resource_type.
+                server.get_webhook_history,
+                {"resource_type": "test", "resource_id": "r-1"},
+                "resource_type must be one of: job, monitor, monitor_group.",
             ),
             (
                 server.update_monitor,

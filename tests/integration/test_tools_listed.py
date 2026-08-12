@@ -177,6 +177,73 @@ async def test_trigger_webhook_tool_schema(mcp):
 
 
 @pytest.mark.asyncio
+async def test_list_user_jobs_has_mode_filter(mcp):
+    """GET /catchAll/jobs/user gained a `mode` (base|lite) query filter — the
+    tool must advertise an optional `mode` parameter."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "list_user_jobs"), None)
+    assert tool is not None, "list_user_jobs not found"
+    props = tool.inputSchema.get("properties", {})
+    required = tool.inputSchema.get("required", [])
+    assert "mode" in props, "list_user_jobs missing 'mode' parameter"
+    assert "mode" not in required, "list_user_jobs 'mode' must stay optional"
+
+
+@pytest.mark.asyncio
+async def test_create_webhook_has_project_id(mcp):
+    """POST /catchAll/webhooks accepts an optional `project_id` to attach the
+    webhook to a project on creation."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "create_webhook"), None)
+    assert tool is not None, "create_webhook not found"
+    props = tool.inputSchema.get("properties", {})
+    required = tool.inputSchema.get("required", [])
+    assert "project_id" in props, "create_webhook missing 'project_id' parameter"
+    assert "project_id" not in required, "create_webhook 'project_id' must stay optional"
+
+
+@pytest.mark.asyncio
+async def test_get_webhook_history_supports_webhook_id_mode(mcp):
+    """GET /catchAll/webhook-history supports querying by `webhook_id` as an
+    alternative to `resource_type` + `resource_id` (exactly one of the two
+    modes per call), so none of the three can be schema-required."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "get_webhook_history"), None)
+    assert tool is not None, "get_webhook_history not found"
+    props = tool.inputSchema.get("properties", {})
+    required = tool.inputSchema.get("required", [])
+    assert {"webhook_id", "resource_type", "resource_id"} <= set(props)
+    for param in ("webhook_id", "resource_type", "resource_id"):
+        assert param not in required, (
+            f"get_webhook_history '{param}' must be optional (mode chosen per call)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_resource_tools_accept_webhook_type(mcp):
+    """resource_type='webhook' is a valid project resource type; the client-side
+    allow-list must not reject it before the API is called. Uses a bogus project
+    ID so validation failure vs API error is distinguishable without creating
+    anything."""
+    result = await mcp.call_tool(
+        "add_project_resources",
+        {
+            "project_id": "00000000-0000-0000-0000-000000000000",
+            "resources": [
+                {
+                    "resource_type": "webhook",
+                    "resource_id": "00000000-0000-0000-0000-000000000000",
+                }
+            ],
+        },
+    )
+    text = result.content[0].text
+    assert "resource_type must be one of" not in text, (
+        f"client-side allow-list still rejects resource_type='webhook': {text}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_csv_download_tool_schemas(mcp):
     """v1.6.3: pull_job_csv and pull_monitor_csv must be present with correct required params."""
     result = await mcp.list_tools()

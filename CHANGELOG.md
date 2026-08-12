@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.7.0] — 2026-08-12
+
+### Added
+- `list_user_jobs` gained an optional `mode` parameter (`base`|`lite`), forwarded as the
+  new `mode` query filter on `GET /catchAll/jobs/user`. Validated client-side
+  (same rule as `submit_query.mode`).
+- `create_webhook` gained an optional `project_id` parameter — attaches the webhook to a
+  project immediately on creation (`POST /catchAll/webhooks` body field).
+- `get_webhook_history` can now query by `webhook_id` (new optional parameter, mutually
+  exclusive with `resource_type` + `resource_id`; exactly one mode per call).
+  Webhook-mode history is the only place manual test deliveries appear — those items are
+  recorded with `resource_type: "test"`.
+
+### Changed
+- `validators.PROJECT_RESOURCE_TYPES` now includes `webhook`: `add_project_resources`,
+  `list_project_resources` (filter), and `remove_project_resource` accept
+  `resource_type="webhook"`. A webhook can belong to several projects at once; deleting a
+  project detaches its webhooks but never deletes them (`delete_project` docs updated —
+  `deleted_resources` includes a `webhook_unlinked` count).
+- `get_webhook_history`'s `resource_type`/`resource_id` parameters are now optional in the
+  schema (required together only when `webhook_id` is not given).
+
+### Tests
+- Fixed the stale `ValidationHelperTests::test_validate_monitor_limit` reference to the
+  renamed `validate_limit` helper.
+- Unit request-mapping tests: `list_user_jobs(mode=lite|base)`, `create_webhook(project_id)`,
+  `add_project_resources`/`remove_project_resource` with `resource_type="webhook"`, and
+  both `get_webhook_history` modes; fail-fast tests for invalid `mode`, conflicting/missing
+  history query modes, and the response-only `test` resource type.
+- Integration schema tests: `list_user_jobs.mode`, `create_webhook.project_id`,
+  `get_webhook_history.webhook_id` (all optional), plus a safe live check that the
+  client-side allow-list no longer rejects `resource_type="webhook"`.
+
+---
+
 ## [1.6.4] — 2026-07-07
 
 ### Added

@@ -49,6 +49,9 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 | `pull_job_csv` | `GET` | `/catchAll/pull/{job_id}/csv` |
 | `delete_job` | `DELETE` | `/catchAll/jobs/{job_id}` |
 
+> **Job listing filters:** `list_user_jobs` supports `search`, `ownership`, `project_id`,
+> and `mode` (`base` or `lite`) filters in addition to `page`/`page_size`.
+
 ### Monitors
 
 | MCP Tool | Method | Endpoint |
@@ -81,6 +84,13 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 | `get_webhook_history` | `GET` | `/catchAll/webhook-history` |
 | `trigger_webhook` | `POST` | `/catchAll/webhook/trigger/{resource_type}/{resource_id}` |
 
+> **Webhook notes:** `create_webhook` accepts an optional `project_id` to attach the
+> webhook to a project on creation. `get_webhook_history` queries in one of two modes —
+> pass `resource_type` + `resource_id` for a job/monitor/monitor_group's deliveries, or
+> pass `webhook_id` for everything delivered through one webhook (exactly one mode per
+> call). Manual test deliveries (`test_webhook`) only appear in webhook mode and are
+> recorded with `resource_type: "test"`.
+
 ### Projects
 
 | MCP Tool | Method | Endpoint |
@@ -94,6 +104,12 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 | `add_project_resources` | `POST` | `/catchAll/projects/{project_id}/resources` |
 | `list_project_resources` | `GET` | `/catchAll/projects/{project_id}/resources` |
 | `remove_project_resource` | `DELETE` | `/catchAll/projects/{project_id}/resources/{resource_type}/{resource_id}` |
+
+> **Project resources:** `resource_type` is one of `job`, `monitor`, `dataset`,
+> `monitor_group`, or `webhook`. A webhook can belong to several projects at once.
+> `delete_project` with `delete_resources=true` deletes the contained jobs, monitors,
+> datasets, and monitor groups, but webhooks are only detached — never deleted — and the
+> response's `deleted_resources` reports them under a `webhook_unlinked` count.
 
 ### Datasets
 

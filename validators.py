@@ -17,9 +17,15 @@ DELIVERY_MODES = {"full", "per_record"}
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 WEBHOOK_AUTH_TYPES = {"bearer", "api_key", "basic"}
 # Resource types a webhook can be mapped to (MappableResourceType).
+# NOTE: delivery-history records can additionally carry resource_type "test"
+# (WebhookHistoryResourceType) for manual test deliveries. That value is
+# response-only and is never accepted where an attachable resource type is
+# expected, so it is deliberately NOT part of this request-side allow-list.
 MAPPABLE_RESOURCE_TYPES = {"job", "monitor", "monitor_group"}
 # Resource types a project can contain (ProjectResourceTypeEnum).
-PROJECT_RESOURCE_TYPES = {"job", "monitor", "dataset", "monitor_group"}
+# Webhooks are first-class project resources: a webhook can belong to several
+# projects at once, and deleting a project detaches (never deletes) its webhooks.
+PROJECT_RESOURCE_TYPES = {"job", "monitor", "dataset", "monitor_group", "webhook"}
 OWNERSHIP_VALUES = {"all", "own", "shared"}
 SORT_ORDERS = {"asc", "desc"}
 DATASET_STATUSES = {"pending", "enriching", "ready", "failed"}
