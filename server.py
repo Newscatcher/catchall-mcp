@@ -852,6 +852,7 @@ async def list_user_jobs(
     search: str = "",
     ownership: str = "",
     project_id: str = "",
+    mode: str = "",
 ) -> str:
     """
     List all jobs submitted by you.
@@ -865,6 +866,7 @@ async def list_user_jobs(
         search: Optional text filter on the job query.
         ownership: Optional ownership filter: 'all', 'own', or 'shared'.
         project_id: Optional filter to jobs belonging to a specific project.
+        mode: Optional filter by job processing mode: 'base' or 'lite'.
 
     Returns:
         JSON with list of your submitted jobs. Each job includes `mode`
@@ -879,6 +881,8 @@ async def list_user_jobs(
             params["ownership"] = validate_choice(ownership, OWNERSHIP_VALUES, "ownership")
         if project_id:
             params["project_id"] = project_id
+        if mode:
+            params["mode"] = validate_mode(mode)
         result = await make_api_request(
             api_key=api_key,
             method="GET",
@@ -1406,6 +1410,7 @@ async def create_webhook(
     params: dict[str, str] | None = None,
     auth: dict[str, Any] | None = None,
     formatter_config: dict[str, Any] | None = None,
+    project_id: str = "",
 ) -> str:
     """
     Create a new webhook endpoint.
@@ -1413,6 +1418,7 @@ async def create_webhook(
     Use when:
     - You want to register a URL to receive job or monitor result deliveries.
     - You need a webhook_id to attach to a monitor (via webhook_ids) or a job submission.
+    - You want the webhook associated with a project from the start (pass `project_id`).
 
     Args:
         name: Human-readable name for the webhook (required).
@@ -1430,6 +1436,9 @@ async def create_webhook(
             - {"type": "api_key", "header": "X-API-Key", "value": "..."}
             - {"type": "basic", "username": "...", "password": "..."}
         formatter_config: Optional custom payload transformation config dict.
+        project_id: Optional project ID to associate this webhook with immediately
+            upon creation. A webhook can belong to several projects at once; use
+            `add_project_resources` (resource_type 'webhook') to attach it to more.
 
     Returns:
         JSON with `success`, `message`, and a `webhook` object — the new id is at
@@ -1440,8 +1449,9 @@ async def create_webhook(
 
     Common API errors:
         - 400: bad request or invalid parameters.
-        - 403: missing or invalid API key.
-        - 422: input validation errors.
+        - 403: missing or invalid API key, or project_id belongs to another organization.
+        - 404: project_id does not reference an existing project.
+        - 422: input validation errors or plan limit reached.
     """
     try:
         body: dict[str, Any] = {"name": name, "url": url, "method": validate_http_method(method)}
@@ -1457,6 +1467,8 @@ async def create_webhook(
             body["auth"] = validate_webhook_auth(auth)
         if formatter_config is not None:
             body["formatter_config"] = formatter_config
+        if project_id:
+            body["project_id"] = project_id
         result = await make_api_request(
             api_key=api_key,
             method="POST",
@@ -1847,46 +1859,72 @@ async def list_resource_webhooks(
 
 @mcp.tool()
 async def get_webhook_history(
-    resource_type: str,
-    resource_id: str,
+    resource_type: str = "",
+    resource_id: str = "",
     api_key: str = "",
     page: int = 1,
     page_size: int = 50,
+    webhook_id: str = "",
 ) -> str:
     """
-    Get the webhook delivery history for a resource (job/monitor/monitor_group).
+    Get webhook delivery history, either for a resource or for a webhook.
 
-    Use when:
-    - You want to see past webhook delivery attempts and their outcomes for a
-      specific job or monitor.
+    Query in exactly one of two modes:
+    - By resource: pass `resource_type` + `resource_id` to see deliveries made
+      for a specific job/monitor/monitor_group.
+    - By webhook: pass `webhook_id` to see every delivery made through one
+      webhook — including manual test deliveries (from `test_webhook`), which
+      are not tied to a job or monitor and only appear in this mode.
 
     Args:
         resource_type: Resource type: 'job', 'monitor', or 'monitor_group'.
+            Required together with `resource_id` when `webhook_id` is not given.
         resource_id: The ID of the job/monitor/monitor_group.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 50, max: 500).
+        webhook_id: Webhook ID to fetch history for. Mutually exclusive with
+            `resource_type`/`resource_id`.
 
     Returns:
-        JSON with the delivery history records for the resource.
+        JSON, ordered by timestamp descending. By resource: `mode` ("resource"),
+        `resource_type`, `resource_id`, `total`, `page`, `page_size`, `items`.
+        By webhook: `mode` ("webhook"), `webhook_id`, `total`, `page`,
+        `page_size`, `items`. Each item is a delivery record with `id`,
+        `webhook_id`, `resource_type`, `resource_id`, `additional_info`,
+        `status_code`, `attempt_number`, `timestamp`, `delivery_status`
+        ("SUCCESS"/"FAILED"), `error_message`, and `warning_message`. An item's
+        `resource_type` can also be "test" for manual test deliveries made with
+        `test_webhook`.
 
     Common API errors:
-        - 403: missing or invalid API key.
-        - 422: invalid resource_type.
+        - 403: missing or invalid API key, or not authorized for this resource.
+        - 404: resource not found.
+        - 422: invalid or conflicting query parameters.
     """
     try:
-        validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
+        if webhook_id and (resource_type or resource_id):
+            raise ValueError(
+                "Provide either webhook_id or resource_type + resource_id, not both."
+            )
+        if not webhook_id:
+            if not resource_type or not resource_id:
+                raise ValueError(
+                    "Provide either webhook_id, or both resource_type and resource_id."
+                )
+            validate_choice(resource_type, MAPPABLE_RESOURCE_TYPES, "resource_type")
         validate_page_params(page, page_size, max_page_size=500)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if webhook_id:
+            params["webhook_id"] = webhook_id
+        else:
+            params["resource_type"] = resource_type
+            params["resource_id"] = resource_id
         result = await make_api_request(
             api_key=api_key,
             method="GET",
             path="/catchAll/webhook-history",
-            params={
-                "resource_type": resource_type,
-                "resource_id": resource_id,
-                "page": page,
-                "page_size": page_size,
-            },
+            params=params,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
@@ -2884,16 +2922,22 @@ async def delete_project(project_id: str, api_key: str = "", delete_resources: b
     Delete a project.
 
     By default the project's resources (jobs, monitors, etc.) are detached but
-    kept. Set `delete_resources=true` to also delete the contained resources.
+    kept. Set `delete_resources=true` to also delete the contained jobs,
+    monitors, datasets, and monitor groups. Webhooks are the exception: they
+    are never deleted by this operation — an attached webhook is only detached
+    from the project and keeps working (it may belong to other projects or
+    resources independently of this one).
 
     Args:
         project_id: The project ID to delete.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
-        delete_resources: If true, also delete the project's resources (default false).
+        delete_resources: If true, also delete the project's resources except
+            webhooks, which are always detached rather than deleted (default false).
 
     Returns:
         JSON with `success`, `message`, `project_id`, and `deleted_resources`
-        (a map of resource_type -> count deleted).
+        (a map of resource_type -> count deleted; includes a `webhook_unlinked`
+        count for webhooks that were detached, not deleted).
 
     Common API errors:
         - 403: missing or invalid API key.
@@ -2952,10 +2996,14 @@ async def add_project_resources(
     """
     Add one or more resources to a project.
 
+    Webhooks are first-class project resources: a webhook can belong to several
+    projects at the same time, and deleting a project only detaches its
+    webhooks — it never deletes them.
+
     Args:
         project_id: The project ID to add resources to.
         resources: A list of resource objects, each `{"resource_type": ..., "resource_id": ...}`.
-            `resource_type` is one of: 'job', 'monitor', 'dataset', 'monitor_group'.
+            `resource_type` is one of: 'job', 'monitor', 'dataset', 'monitor_group', 'webhook'.
             May also be passed as a JSON-string array for client compatibility.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
@@ -3011,7 +3059,7 @@ async def list_project_resources(
     Args:
         project_id: The project ID whose resources you want.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
-        resource_type: Optional filter: 'job', 'monitor', 'dataset', or 'monitor_group'.
+        resource_type: Optional filter: 'job', 'monitor', 'dataset', 'monitor_group', or 'webhook'.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 100, max: 1000).
 
@@ -3052,9 +3100,13 @@ async def remove_project_resource(
     """
     Remove a single resource from a project.
 
+    This detaches the resource from the project without deleting the resource
+    itself (e.g. removing a webhook only ends its membership in this project;
+    the webhook keeps existing and stays attached to any other projects).
+
     Args:
         project_id: The project ID to remove the resource from.
-        resource_type: Resource type: 'job', 'monitor', 'dataset', or 'monitor_group'.
+        resource_type: Resource type: 'job', 'monitor', 'dataset', 'monitor_group', or 'webhook'.
         resource_id: The ID of the resource to remove.
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
 
