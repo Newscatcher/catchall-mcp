@@ -53,12 +53,30 @@ def call_result_text(result) -> str:
     """Extract raw text and always print it — visible with pytest -s."""
     assert result.content, "Tool returned no content"
     text = result.content[0].text
-    print(f"\n--- MCP response ---\n{text}\n--------------------")
+    print(f"\n--- MCP response (isError={result.isError}) ---\n{text}\n--------------------")
     return text
 
 
 def call_result_json(result) -> dict:
-    """Extract, print, and parse JSON from a CallToolResult."""
+    """Extract, print, and parse JSON from a successful CallToolResult.
+
+    v1.8.0: upstream/validation failures are real MCP tool errors
+    (`isError=True`), not a `{}`/text success — assert on `isError`, not on
+    the text prefix, so a silently-swallowed failure can never slip through.
+    """
     text = call_result_text(result)
-    assert not text.startswith("Error:"), f"Tool returned error: {text}"
+    assert not result.isError, f"Tool returned an error: {text}"
     return json.loads(text)
+
+
+def assert_tool_error(result) -> str:
+    """Assert a CallToolResult is a real MCP tool error (isError=True).
+
+    v1.8.0: upstream 4xx/5xx and local validation failures must surface as
+    isError=True, carrying the upstream status code and message — never a
+    silently-returned `{}` or text success. Returns the message text for
+    additional diagnostics (e.g. substring checks).
+    """
+    text = call_result_text(result)
+    assert result.isError, f"Expected an MCP tool error (isError=True), got a success result: {text}"
+    return text

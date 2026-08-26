@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.8.0] — 2026-08-26
+
+### Fixed
+- **Critical: silent error swallowing (all tools).** Every tool caught the `ValueError`
+  raised by `make_api_request`/`make_api_upload` on a non-2xx upstream response (or a
+  local input-validation failure) and returned a plain `"Error: ..."` *string* — a
+  successful (`isError=False`) MCP tool result whose text merely said "Error". A client
+  checking only `isError` (rather than parsing text) saw a false success instead of a
+  failure signal. Reproduced live on `list_projects` (bad `api_key`), `list_monitors` /
+  `list_datasets` (invalid `project_id`), `get_project` / `get_job_status` (not-found id),
+  and `submit_query` (the known `project_id` API bug). Fixed at the source: every tool's
+  `except ValueError` / `except Exception` handler now raises `fastmcp.exceptions.ToolError`
+  instead of returning a string, so FastMCP reports a real tool error (`isError=True`)
+  carrying the upstream status code and message. Legitimate 2xx responses with an empty
+  body (e.g. a 204 delete, or a zero-result list) are unaffected — that path never raises.
+
+### Added
+- `list_source_groups` tool — `GET /catchAll/source-groups`. Lists reusable, named
+  source-domain allowlists (public groups plus any organization-visibility groups your
+  organization can access). Optional `page`/`page_size`; returns `{source_groups, total,
+  page, page_size}`, each item with `slug`, `name`, `description`. Pass a group's `slug`
+  to `POST /catchAll/submit`'s new `source_groups` field (direct API only for now) to
+  scope fetching to that domain allowlist.
+- `list_webhooks` gained an optional `project_id` parameter, forwarded as the `project_id`
+  query filter on `GET /catchAll/webhooks` (mirrors `list_user_jobs`/`list_monitors`/
+  `list_datasets`).
+- `list_entities` gained an optional `project_id` parameter, forwarded as the `project_id`
+  query filter on the entity-list endpoint (same filter, same pattern).
+
+### Tests
+- Unit request-mapping tests for `list_source_groups` (default and paged), `list_webhooks`/
+  `list_entities` with `project_id`, and `list_projects` in `tests/test_server.py`.
+- New regression suite `test_upstream_4xx_5xx_raise_tool_error_not_silent_success` proving
+  `list_projects`, `list_monitors`, `list_datasets`, `get_project`, `get_job_status`, and
+  `submit_query` all raise `ToolError` (not a silent success) on a simulated upstream
+  4xx/5xx, plus `test_legitimate_empty_dict_success_is_not_an_error` proving a real empty-
+  body 2xx success is untouched by the fix.
+- Updated every stale `"Error: ..."` string assertion to `assertRaises(ToolError)` across
+  `tests/test_server.py` (fail-fast validation tests, CSV-upload validation tests) and to
+  `result.isError` checks across `tests/integration/` (`test_auth.py`, `test_jobs.py`,
+  `test_monitors.py`, `test_meta.py`, `conftest.py`'s `call_result_json` / new
+  `assert_tool_error` helper) — these tests exercised exactly the code path this release
+  fixes and would otherwise have gone stale silently.
+- Integration schema tests: `list_source_groups` tool schema + live shape check,
+  `list_webhooks`/`list_entities` `project_id` schema check, plus two live
+  error-propagation regression checks (`get_job_status` on a not-found `job_id`,
+  `list_monitors` on an invalid `project_id`) asserting `isError=True`. `EXPECTED_TOOLS`
+  updated in `tests/integration/test_tools_listed.py`.
+
+---
+
 ## [1.7.0] — 2026-08-12
 
 ### Added

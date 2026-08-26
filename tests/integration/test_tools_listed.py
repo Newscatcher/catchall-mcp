@@ -1,13 +1,16 @@
 """
 Integration test: verify the MCP server advertises the expected tools.
 
-This is a fast smoke test — doesn't call any real API endpoints,
-just checks the server's tool manifest.
+Mostly a fast smoke test against the server's tool manifest, plus a handful
+of live calls (schema-adjacent capability proofs and error-propagation
+regression checks) where checking the manifest alone isn't enough.
 """
 
 from __future__ import annotations
 
 import pytest
+
+from conftest import call_result_json, call_result_text
 
 
 EXPECTED_TOOLS = {
@@ -81,6 +84,8 @@ EXPECTED_TOOLS = {
     "check_health",
     "get_version",
     "get_user_limits",
+    # Source group tools (v1.8.0)
+    "list_source_groups",
 }
 
 
@@ -240,6 +245,83 @@ async def test_project_resource_tools_accept_webhook_type(mcp):
     text = result.content[0].text
     assert "resource_type must be one of" not in text, (
         f"client-side allow-list still rejects resource_type='webhook': {text}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_webhooks_and_list_entities_have_project_id_filter(mcp):
+    """v1.8.0: GET /catchAll/webhooks and the entity-list endpoint both gained
+    an optional `project_id` query filter — list_webhooks/list_entities must
+    advertise it, matching the sibling list_user_jobs/list_monitors/list_datasets
+    tools that already carry this filter."""
+    result = await mcp.list_tools()
+    tools = {t.name: t for t in result.tools}
+
+    for tool_name in ("list_webhooks", "list_entities"):
+        tool = tools.get(tool_name)
+        assert tool is not None, f"{tool_name} not found"
+        props = tool.inputSchema.get("properties", {})
+        required = tool.inputSchema.get("required", [])
+        assert "project_id" in props, f"{tool_name} missing 'project_id' parameter"
+        assert "project_id" not in required, f"{tool_name} 'project_id' must stay optional"
+
+
+@pytest.mark.asyncio
+async def test_list_source_groups_tool_schema(mcp):
+    """v1.8.0: GET /catchAll/source-groups (named domain allowlists) must be
+    exposed as a list_source_groups tool with optional page/page_size."""
+    result = await mcp.list_tools()
+    tool = next((t for t in result.tools if t.name == "list_source_groups"), None)
+    assert tool is not None, "list_source_groups not found"
+    props = tool.inputSchema.get("properties", {})
+    required = tool.inputSchema.get("required", [])
+    assert {"page", "page_size"} <= set(props)
+    assert not ({"page", "page_size"} & set(required)), (
+        "list_source_groups page/page_size must stay optional"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_source_groups_returns_expected_shape(mcp):
+    """Live call: list_source_groups must return the documented
+    {source_groups, total, page, page_size} shape (ListSourceGroupsApiResponseDto)."""
+    result = await mcp.call_tool("list_source_groups", {"page": 1, "page_size": 25})
+    data = call_result_json(result)
+    assert "source_groups" in data, f"Expected 'source_groups' key: {data}"
+    assert isinstance(data["source_groups"], list)
+    for key in ("total", "page", "page_size"):
+        assert key in data, f"Expected '{key}' in response: {data}"
+
+
+@pytest.mark.asyncio
+async def test_error_propagation_not_found_job_surfaces_as_tool_error(mcp):
+    """v1.8.0 regression check (wrapper_gap): a not-found job_id must surface
+    as a real MCP tool error (isError=True) carrying the upstream status code
+    and message — not a silently-returned `{}` success. Before the fix, the
+    mcp tool layer swallowed every non-2xx upstream response into an empty
+    `{}` success regardless of the actual failure."""
+    result = await mcp.call_tool(
+        "get_job_status", {"job_id": "00000000-0000-0000-0000-000000000000"}
+    )
+    text = call_result_text(result)
+    assert result.isError, (
+        f"Expected an MCP tool error for a not-found job_id, got a success result: {text}"
+    )
+    assert text.strip() not in ("{}", ""), f"Error must carry a real message, got: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_error_propagation_invalid_project_filter_surfaces_as_tool_error(mcp):
+    """v1.8.0 regression check (wrapper_gap): filtering by a nonexistent
+    project_id must surface as a real MCP tool error, not a silent `{}`
+    success — reproduced live on list_monitors/list_datasets/list_projects."""
+    result = await mcp.call_tool(
+        "list_monitors",
+        {"project_id": "00000000-0000-0000-0000-000000000000"},
+    )
+    text = call_result_text(result)
+    assert result.isError, (
+        f"Expected an MCP tool error for an invalid project_id filter, got a success result: {text}"
     )
 
 

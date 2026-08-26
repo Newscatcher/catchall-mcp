@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from conftest import call_result_json, call_result_text
+from conftest import assert_tool_error, call_result_json
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +54,7 @@ class TestInitializeQuery:
         result = await mcp.call_tool(
             "initialize_query", {"query": "test", "api_key": "INVALID"}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
 
 # ---------------------------------------------------------------------------
@@ -77,14 +76,12 @@ class TestListUserJobs:
 
     async def test_invalid_page_returns_error(self, mcp):
         result = await mcp.call_tool("list_user_jobs", {"page": 0})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "page" in text.lower()
 
     async def test_invalid_page_size_returns_error(self, mcp):
         result = await mcp.call_tool("list_user_jobs", {"page_size": 9999})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
 
 # ---------------------------------------------------------------------------
@@ -136,18 +133,18 @@ class TestJobLifecycle:
         )
 
     async def test_get_status_unknown_job_returns_error(self, mcp):
+        """v1.8.0 regression check: a not-found job_id must surface as a real
+        MCP tool error (isError=True), not a silently-returned `{}` success."""
         result = await mcp.call_tool(
             "get_job_status", {"job_id": "00000000-0000-0000-0000-000000000000"}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_pull_results_unknown_job_returns_error(self, mcp):
         result = await mcp.call_tool(
             "pull_results", {"job_id": "00000000-0000-0000-0000-000000000000"}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_submit_with_validators_and_enrichments(self, mcp):
         result = await mcp.call_tool(
@@ -191,8 +188,7 @@ class TestJobLifecycle:
         result = await mcp.call_tool(
             "submit_query", {"query": "test", "mode": "turbo"}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "mode" in text.lower()
 
     async def test_pull_results_pagination_params(self, mcp):
@@ -211,8 +207,7 @@ class TestJobLifecycle:
         result = await mcp.call_tool(
             "pull_results", {"job_id": "any-id", "page": 0}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
 
 # ---------------------------------------------------------------------------
@@ -226,15 +221,13 @@ class TestContinueJob:
             "continue_job",
             {"job_id": "00000000-0000-0000-0000-000000000000", "new_limit": 15},
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_continue_invalid_new_limit_returns_error(self, mcp):
         result = await mcp.call_tool(
             "continue_job", {"job_id": "some-id", "new_limit": 0}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "new_limit" in text.lower()
 
 

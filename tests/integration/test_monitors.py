@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from conftest import call_result_json, call_result_text
+from conftest import assert_tool_error, call_result_json, call_result_text
 
 run_monitor_tests = pytest.mark.skipif(
     not os.getenv("CATCHALL_RUN_MONITOR_TESTS"),
@@ -42,14 +42,22 @@ class TestListMonitors:
 
     async def test_invalid_page_returns_error(self, mcp):
         result = await mcp.call_tool("list_monitors", {"page": 0})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "page" in text.lower()
 
     async def test_invalid_page_size_returns_error(self, mcp):
         result = await mcp.call_tool("list_monitors", {"page_size": 9999})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
+
+    async def test_invalid_project_id_returns_error(self, mcp):
+        """v1.8.0 regression check: an invalid/foreign project_id must surface
+        as a real MCP tool error (isError=True), not a silently-returned `{}`
+        success (this was one of the reproduced wrapper_gap scenarios)."""
+        result = await mcp.call_tool(
+            "list_monitors",
+            {"project_id": "00000000-0000-0000-0000-000000000000"},
+        )
+        assert_tool_error(result)
 
 
 # ---------------------------------------------------------------------------
@@ -63,24 +71,21 @@ class TestMonitorReadTools:
             "pull_monitor_results",
             {"monitor_id": "00000000-0000-0000-0000-000000000000"},
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_list_jobs_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool(
             "list_monitor_jobs",
             {"monitor_id": "00000000-0000-0000-0000-000000000000"},
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_list_monitor_jobs_invalid_sort_returns_error(self, mcp):
         result = await mcp.call_tool(
             "list_monitor_jobs",
             {"monitor_id": "some-id", "sort": "newest"},
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "sort" in text.lower()
 
     async def test_list_monitor_jobs_valid_sort_values(self, mcp):
@@ -89,10 +94,11 @@ class TestMonitorReadTools:
                 "list_monitor_jobs",
                 {"monitor_id": "00000000-0000-0000-0000-000000000000", "sort": sort},
             )
-            text = call_result_text(result)
-            # Should fail with not-found, NOT a validation error
-            assert "sort" not in text.lower() or text.startswith("Error:"), (
-                f"sort={sort!r} caused unexpected response: {text}"
+            # Should fail with not-found, NOT a client-side validation error —
+            # either way it must be a real tool error, never a silent success.
+            text = assert_tool_error(result)
+            assert "sort" not in text.lower(), (
+                f"sort={sort!r} caused an unexpected validation error: {text}"
             )
 
 
@@ -106,13 +112,11 @@ class TestMonitorWriteToolsWithFakeId:
 
     async def test_disable_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool("disable_monitor", {"monitor_id": self.FAKE_ID})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_enable_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool("enable_monitor", {"monitor_id": self.FAKE_ID})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_update_unknown_monitor_returns_error(self, mcp):
         # v1.5.3: monitors take centralized webhook_ids (no inline webhook config).
@@ -120,26 +124,22 @@ class TestMonitorWriteToolsWithFakeId:
             "update_monitor",
             {"monitor_id": self.FAKE_ID, "webhook_ids": [self.FAKE_ID]},
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_update_monitor_invalid_limit_returns_error(self, mcp):
         result = await mcp.call_tool(
             "update_monitor", {"monitor_id": self.FAKE_ID, "limit": 5}
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "limit" in text.lower()
 
     async def test_delete_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool("delete_monitor", {"monitor_id": self.FAKE_ID})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_get_status_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool("get_monitor_status", {"monitor_id": self.FAKE_ID})
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_create_monitor_without_valid_job_returns_error(self, mcp):
         result = await mcp.call_tool(
@@ -149,8 +149,7 @@ class TestMonitorWriteToolsWithFakeId:
                 "schedule": "every day at 9 AM UTC",
             },
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        assert_tool_error(result)
 
     async def test_create_monitor_invalid_limit_returns_error(self, mcp):
         result = await mcp.call_tool(
@@ -161,8 +160,7 @@ class TestMonitorWriteToolsWithFakeId:
                 "limit": 5,  # minimum is 10
             },
         )
-        text = call_result_text(result)
-        assert text.startswith("Error:")
+        text = assert_tool_error(result)
         assert "limit" in text.lower()
 
 
@@ -210,12 +208,12 @@ class TestMonitorLifecycle:
         # 4. Disable
         disable = await mcp.call_tool("disable_monitor", {"monitor_id": monitor_id})
         disable_text = call_result_text(disable)
-        assert not disable_text.startswith("Error:"), f"Disable failed: {disable_text}"
+        assert not disable.isError, f"Disable failed: {disable_text}"
 
         # 5. Enable
         enable = await mcp.call_tool("enable_monitor", {"monitor_id": monitor_id})
         enable_text = call_result_text(enable)
-        assert not enable_text.startswith("Error:"), f"Enable failed: {enable_text}"
+        assert not enable.isError, f"Enable failed: {enable_text}"
 
         # 6. Update per-run limit (webhooks are now assigned via webhook_ids)
         update = await mcp.call_tool(
