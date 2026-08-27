@@ -29,6 +29,7 @@ def _install_test_stubs() -> None:
         middleware_module = types.ModuleType("fastmcp.server.middleware")
         dependencies_module = types.ModuleType("fastmcp.server.dependencies")
         server_module = types.ModuleType("fastmcp.server")
+        exceptions_module = types.ModuleType("fastmcp.exceptions")
 
         class FastMCP:  # pragma: no cover - only used in fallback envs
             def __init__(self, *args, **kwargs):
@@ -52,6 +53,9 @@ def _install_test_stubs() -> None:
         class MiddlewareContext:  # pragma: no cover - only used in fallback envs
             pass
 
+        class ToolError(Exception):  # pragma: no cover - only used in fallback envs
+            """Fallback stand-in for fastmcp.exceptions.ToolError."""
+
         def get_http_request():  # pragma: no cover - only used in fallback envs
             raise RuntimeError("No HTTP request context in tests.")
 
@@ -59,17 +63,23 @@ def _install_test_stubs() -> None:
         middleware_module.Middleware = Middleware
         middleware_module.MiddlewareContext = MiddlewareContext
         dependencies_module.get_http_request = get_http_request
+        exceptions_module.ToolError = ToolError
 
         sys.modules["fastmcp"] = fastmcp_module
         sys.modules["fastmcp.server"] = server_module
         sys.modules["fastmcp.server.middleware"] = middleware_module
         sys.modules["fastmcp.server.dependencies"] = dependencies_module
+        sys.modules["fastmcp.exceptions"] = exceptions_module
 
 
 _install_test_stubs()
 
 import server
 import validators
+
+# Use the same ToolError class server.py resolved to (real fastmcp.exceptions.ToolError,
+# or the fallback stub installed above when fastmcp isn't available).
+ToolError = server.ToolError
 
 
 class DummyResponse:
@@ -720,6 +730,25 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 True,
             ),
             (
+                server.list_webhooks,
+                {},
+                "GET",
+                "/catchAll/webhooks",
+                None,
+                {"page": 1, "page_size": 100},
+                True,
+            ),
+            (
+                # v1.8.0: GET /catchAll/webhooks gained an optional project_id filter.
+                server.list_webhooks,
+                {"project_id": "proj-1"},
+                "GET",
+                "/catchAll/webhooks",
+                None,
+                {"page": 1, "page_size": 100, "project_id": "proj-1"},
+                True,
+            ),
+            (
                 # Webhooks are first-class project resources.
                 server.add_project_resources,
                 {"project_id": "p-1",
@@ -787,6 +816,52 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 "/catchAll/entities/",
                 {"name": "Stripe", "entity_type": "company"},
                 None,
+                True,
+            ),
+            (
+                server.list_entities,
+                {},
+                "GET",
+                "/catchAll/entities/",
+                None,
+                {"page": 1, "page_size": 100},
+                True,
+            ),
+            (
+                # v1.8.0: entity listing gained an optional project_id filter.
+                server.list_entities,
+                {"project_id": "proj-1"},
+                "GET",
+                "/catchAll/entities/",
+                None,
+                {"page": 1, "page_size": 100, "project_id": "proj-1"},
+                True,
+            ),
+            (
+                server.list_projects,
+                {},
+                "GET",
+                "/catchAll/projects/",
+                None,
+                {"page": 1, "page_size": 100},
+                True,
+            ),
+            (
+                server.list_source_groups,
+                {},
+                "GET",
+                "/catchAll/source-groups",
+                None,
+                {"page": 1, "page_size": 100},
+                True,
+            ),
+            (
+                server.list_source_groups,
+                {"page": 2, "page_size": 25},
+                "GET",
+                "/catchAll/source-groups",
+                None,
+                {"page": 2, "page_size": 25},
                 True,
             ),
             (
@@ -1068,9 +1143,78 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
             fn = _unwrap(tool_func)
             with self.subTest(tool=fn.__name__, kwargs=kwargs):
                 with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
-                    result = await fn(**kwargs)
-                self.assertEqual(result, f"Error: {expected_error}")
+                    # v1.8.0 (wrapper_gap fix): validation/API failures must raise a
+                    # real MCP ToolError (isError=True), never a silently-returned
+                    # "Error: ..." success string.
+                    with self.assertRaises(ToolError) as ctx:
+                        await fn(**kwargs)
+                self.assertEqual(str(ctx.exception), expected_error)
                 mock_api.assert_not_awaited()
+
+    async def test_upstream_4xx_5xx_raise_tool_error_not_silent_success(self) -> None:
+        """v1.8.0 wrapper_gap regression test.
+
+        Before this release, every tool caught the ValueError raised by
+        make_api_request on a non-2xx upstream response and returned a plain
+        "Error: ..." *string* — a successful (isError=False) MCP tool result
+        whose text happened to say "Error". Reproduced live on list_projects,
+        list_monitors, list_datasets, get_project, get_job_status, and
+        submit_query. The fix: make_api_request's ValueError must now surface
+        as a real ToolError (isError=True) from every one of those tools.
+        """
+        cases = [
+            (server.list_projects, {}, "API Error (401): Api key not found"),
+            (
+                server.list_monitors,
+                {"project_id": "00000000-0000-0000-0000-000000000000"},
+                "API Error (403): Project not found or not accessible",
+            ),
+            (
+                server.list_datasets,
+                {"project_id": "00000000-0000-0000-0000-000000000000"},
+                "API Error (403): Project not found or not accessible",
+            ),
+            (
+                server.get_project,
+                {"project_id": "00000000-0000-0000-0000-000000000000"},
+                "API Error (404): Project not found",
+            ),
+            (
+                server.get_job_status,
+                {"job_id": "00000000-0000-0000-0000-000000000000"},
+                "API Error (404): Job not found",
+            ),
+            (
+                server.submit_query,
+                {"query": "test", "project_id": "00000000-0000-0000-0000-000000000000"},
+                "API Error (400): Input should be a valid string",
+            ),
+        ]
+        for tool_func, kwargs, upstream_message in cases:
+            fn = _unwrap(tool_func)
+            with self.subTest(tool=fn.__name__):
+                with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+                    mock_api.side_effect = ValueError(upstream_message)
+                    with self.assertRaises(ToolError) as ctx:
+                        await fn(**kwargs)
+                self.assertEqual(str(ctx.exception), upstream_message)
+
+    async def test_legitimate_empty_dict_success_is_not_an_error(self) -> None:
+        """A real 2xx response that legitimately carries an empty body/dict
+        (e.g. a 204 no-content delete, or a zero-result list) must still be
+        returned as a normal successful result — the wrapper_gap fix only
+        changes behavior on a raised exception (4xx/5xx), never on a
+        successful empty payload."""
+        for tool_func, kwargs in (
+            (server.list_projects, {}),
+            (server.delete_job, {"job_id": "job-1"}),
+        ):
+            fn = _unwrap(tool_func)
+            with self.subTest(tool=fn.__name__):
+                with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+                    mock_api.return_value = {}
+                    result = await fn(**kwargs)
+                self.assertEqual(result, json.dumps({}, indent=2))
 
     async def test_validate_query_has_no_context_param(self) -> None:
         """v1.6.1 removed `context` from CheckQueryQualityRequestDto — the tool
@@ -1163,30 +1307,33 @@ class CsvUploadToolTests(unittest.IsolatedAsyncioTestCase):
             (
                 server.create_dataset_from_csv,
                 {"name": "", "file": CSV_TEXT},
-                "Error: name is required.",
+                "name is required.",
             ),
             (
                 server.create_dataset_from_csv,
                 {"name": "anvils", "file": ""},
-                "Error: file is required: pass the CSV content as raw text or base64.",
+                "file is required: pass the CSV content as raw text or base64.",
             ),
             (
                 server.append_csv_to_dataset,
                 {"dataset_id": "", "file": CSV_TEXT},
-                "Error: dataset_id is required.",
+                "dataset_id is required.",
             ),
             (
                 server.append_csv_to_dataset,
                 {"dataset_id": "ds-1", "file": "not-base64-and-not-csv!!!"},
-                "Error: file must be raw CSV text or standard base64-encoded CSV content.",
+                "file must be raw CSV text or standard base64-encoded CSV content.",
             ),
         ]
         for tool_func, kwargs, expected_error in invalid_calls:
             fn = _unwrap(tool_func)
             with self.subTest(tool=fn.__name__, kwargs=kwargs):
                 with patch("server.make_api_upload", new_callable=AsyncMock) as mock_upload:
-                    result = await fn(**kwargs)
-                self.assertEqual(result, expected_error)
+                    # v1.8.0 (wrapper_gap fix): validation failures raise ToolError,
+                    # never a silently-returned "Error: ..." success string.
+                    with self.assertRaises(ToolError) as ctx:
+                        await fn(**kwargs)
+                self.assertEqual(str(ctx.exception), expected_error)
                 mock_upload.assert_not_awaited()
 
 

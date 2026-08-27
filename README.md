@@ -85,11 +85,12 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 | `trigger_webhook` | `POST` | `/catchAll/webhook/trigger/{resource_type}/{resource_id}` |
 
 > **Webhook notes:** `create_webhook` accepts an optional `project_id` to attach the
-> webhook to a project on creation. `get_webhook_history` queries in one of two modes —
-> pass `resource_type` + `resource_id` for a job/monitor/monitor_group's deliveries, or
-> pass `webhook_id` for everything delivered through one webhook (exactly one mode per
-> call). Manual test deliveries (`test_webhook`) only appear in webhook mode and are
-> recorded with `resource_type: "test"`.
+> webhook to a project on creation. `list_webhooks` also accepts an optional `project_id`
+> to filter to webhooks belonging to a specific project. `get_webhook_history` queries in
+> one of two modes — pass `resource_type` + `resource_id` for a job/monitor/monitor_group's
+> deliveries, or pass `webhook_id` for everything delivered through one webhook (exactly
+> one mode per call). Manual test deliveries (`test_webhook`) only appear in webhook mode
+> and are recorded with `resource_type: "test"`.
 
 ### Projects
 
@@ -146,7 +147,21 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 
 > **`external_entity_id` (v1.6.3):** `create_entity` and `update_entity` accept an optional
 > `external_entity_id` string — a customer-supplied identifier that links the entity to a
-> record in an external system.
+> record in an external system. **`project_id` (v1.8.0):** `list_entities` accepts an
+> optional `project_id` to filter to entities belonging to a specific project.
+
+### Source Groups
+
+| MCP Tool | Method | Endpoint |
+| --- | --- | --- |
+| `list_source_groups` | `GET` | `/catchAll/source-groups` |
+
+> **Source groups (v1.8.0):** named, reusable domain allowlists (public groups plus any
+> organization-visibility groups your organization can access). `list_source_groups`
+> returns each group's `slug`, `name`, and `description`. The direct API's `POST /catchAll/submit`
+> now accepts a `source_groups` field of slugs to scope fetching to a domain allowlist;
+> `submit_query` does not yet expose this parameter — use the direct API for that until
+> a future release adds it here.
 
 ### User & Meta
 
@@ -247,8 +262,14 @@ claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mc
 Tools return:
 
 - Pretty JSON string on success.
-- `"Error: ..."` for validation/API errors.
-- `"Unexpected error: ..."` for unhandled exceptions.
+- **(v1.8.0)** An MCP tool error (`isError=True`) for any upstream non-2xx response
+  (bad `api_key`, invalid/foreign `project_id`, not-found ids, validation failures,
+  etc.) or unhandled exception. The error message carries the upstream status code
+  and message, for example `API Error (401): Api key not found`. Before v1.8.0, tools
+  swallowed these failures and returned a plain `"Error: ..."` string as a *successful*
+  tool result — clients checking only `isError` would see a false success. That has
+  been fixed: every tool now raises a `ToolError` instead of returning an error string,
+  so failures are always reported as real tool errors.
 
 ## Running
 

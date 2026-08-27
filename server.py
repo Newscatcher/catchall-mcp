@@ -20,6 +20,7 @@ from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.http import _current_http_request
 from starlette.middleware import Middleware as StarletteMiddleware
 from validators import (
@@ -600,9 +601,11 @@ async def submit_query(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -670,9 +673,11 @@ async def initialize_query(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -714,9 +719,11 @@ async def get_job_status(job_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -766,9 +773,11 @@ async def pull_results(job_id: str, api_key: str = "", page: int = 1, page_size:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -799,9 +808,11 @@ async def pull_job_csv(job_id: str, api_key: str = "") -> str:
             return_text=True,
         )
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -839,9 +850,11 @@ async def continue_job(job_id: str, new_limit: int | None = None, api_key: str =
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -891,9 +904,11 @@ async def list_user_jobs(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -923,9 +938,11 @@ async def delete_job(job_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -972,9 +989,53 @@ async def validate_query(query: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Source group tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_source_groups(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+    """
+    List source groups (named domain allowlists).
+
+    Use when:
+    - You want to discover reusable, named sets of source domains (public groups
+      plus any organization-visibility groups your organization can access).
+    - You need a group's `slug` to attach to `submit_query` via `source_groups`
+      to scope fetching to that domain allowlist.
+
+    Args:
+        api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
+        page: Page number for pagination (default: 1).
+        page_size: Number of results per page (default: 100, max: 500).
+
+    Returns:
+        JSON with `total`, `page`, `page_size`, and a `source_groups` list.
+        Each item has `slug`, `name`, and `description`.
+    """
+    try:
+        validate_page_params(page, page_size, max_page_size=500)
+        result = await make_api_request(
+            api_key=api_key,
+            method="GET",
+            path="/catchAll/source-groups",
+            params={"page": page, "page_size": page_size},
+        )
+        return json.dumps(result, indent=2)
+    except ValueError as e:
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
+    except Exception as e:
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -1047,9 +1108,11 @@ async def create_monitor(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1095,9 +1158,11 @@ async def list_monitors(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1122,9 +1187,11 @@ async def pull_monitor_results(monitor_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1155,9 +1222,11 @@ async def pull_monitor_csv(monitor_id: str, api_key: str = "") -> str:
             return_text=True,
         )
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1185,9 +1254,11 @@ async def list_monitor_jobs(monitor_id: str, api_key: str = "", sort: str = "asc
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1212,9 +1283,11 @@ async def disable_monitor(monitor_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2) if result else "Monitor disabled successfully."
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1242,9 +1315,11 @@ async def enable_monitor(monitor_id: str, api_key: str = "", backfill: bool | No
         )
         return json.dumps(result, indent=2) if result else "Monitor enabled successfully."
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1286,9 +1361,11 @@ async def update_monitor(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1318,9 +1395,11 @@ async def delete_monitor(monitor_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1353,9 +1432,11 @@ async def get_monitor_status(monitor_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -1364,7 +1445,12 @@ async def get_monitor_status(monitor_id: str, api_key: str = "") -> str:
 
 
 @mcp.tool()
-async def list_webhooks(api_key: str = "", page: int = 1, page_size: int = 100) -> str:
+async def list_webhooks(
+    api_key: str = "",
+    page: int = 1,
+    page_size: int = 100,
+    project_id: str = "",
+) -> str:
     """
     List all your webhooks.
 
@@ -1376,6 +1462,7 @@ async def list_webhooks(api_key: str = "", page: int = 1, page_size: int = 100) 
         api_key: CatchAll API key. Optional if provided via x-api-key header or CATCHALL_API_KEY env var.
         page: Page number for pagination (default: 1).
         page_size: Number of results per page (default: 100, max: 1000).
+        project_id: Optional filter to webhooks belonging to a specific project.
 
     Returns:
         JSON with total, page, page_size, total_pages, and a webhooks list.
@@ -1385,17 +1472,22 @@ async def list_webhooks(api_key: str = "", page: int = 1, page_size: int = 100) 
     """
     try:
         validate_page_params(page, page_size, max_page_size=1000)
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
+        if project_id:
+            params["project_id"] = project_id
         result = await make_api_request(
             api_key=api_key,
             method="GET",
             path="/catchAll/webhooks",
-            params={"page": page, "page_size": page_size},
+            params=params,
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1477,9 +1569,11 @@ async def create_webhook(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1512,9 +1606,11 @@ async def get_webhook(webhook_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1596,9 +1692,11 @@ async def update_webhook(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1630,9 +1728,11 @@ async def delete_webhook(webhook_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1670,9 +1770,11 @@ async def test_webhook(webhook_id: str, api_key: str = "", payload: dict[str, An
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1714,9 +1816,11 @@ async def assign_webhook_resource(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1761,9 +1865,11 @@ async def list_webhook_resources(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1802,9 +1908,11 @@ async def remove_webhook_resource(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1852,9 +1960,11 @@ async def list_resource_webhooks(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1928,9 +2038,11 @@ async def get_webhook_history(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -1979,9 +2091,11 @@ async def trigger_webhook(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -2036,9 +2150,11 @@ async def create_dataset(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2093,9 +2209,11 @@ async def list_datasets(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2123,9 +2241,11 @@ async def get_dataset(dataset_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2166,9 +2286,11 @@ async def update_dataset(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2199,9 +2321,11 @@ async def delete_dataset(dataset_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2233,9 +2357,11 @@ async def add_dataset_entities(dataset_id: str, entity_ids: list[str], api_key: 
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2266,9 +2392,11 @@ async def remove_dataset_entities(dataset_id: str, entity_ids: list[str], api_ke
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2327,9 +2455,11 @@ async def list_dataset_entities(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2357,9 +2487,11 @@ async def get_dataset_status(dataset_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2419,9 +2551,11 @@ async def create_dataset_from_csv(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2465,9 +2599,11 @@ async def append_csv_to_dataset(dataset_id: str, file: str, api_key: str = "") -
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -2526,9 +2662,11 @@ async def create_entity(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2541,6 +2679,7 @@ async def list_entities(
     entity_type: str = "",
     sort_by: str = "",
     sort_order: str = "",
+    project_id: str = "",
 ) -> str:
     """
     List your entities.
@@ -2554,6 +2693,7 @@ async def list_entities(
         entity_type: Optional type filter: 'company' or 'person'.
         sort_by: Optional sort field: 'created_at', 'name', or 'status'.
         sort_order: Optional sort direction: 'asc' or 'desc'.
+        project_id: Optional filter to entities belonging to a specific project.
 
     Returns:
         JSON with `entities` (list of full entity objects), `total`, `page`, `page_size`.
@@ -2571,6 +2711,8 @@ async def list_entities(
             params["sort_by"] = validate_choice(sort_by, ENTITY_SORT_BY, "sort_by")
         if sort_order:
             params["sort_order"] = validate_choice(sort_order, SORT_ORDERS, "sort_order")
+        if project_id:
+            params["project_id"] = project_id
         result = await make_api_request(
             api_key=api_key,
             method="GET",
@@ -2579,9 +2721,11 @@ async def list_entities(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2636,9 +2780,11 @@ async def create_entities_batch(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2667,9 +2813,11 @@ async def get_entity(entity_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2720,9 +2868,11 @@ async def update_entity(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2750,9 +2900,11 @@ async def delete_entity(entity_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -2793,9 +2945,11 @@ async def create_project(name: str, api_key: str = "", description: str = "") ->
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2836,9 +2990,11 @@ async def list_projects(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2866,9 +3022,11 @@ async def get_project(project_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2911,9 +3069,11 @@ async def update_project(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2952,9 +3112,11 @@ async def delete_project(project_id: str, api_key: str = "", delete_resources: b
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -2982,9 +3144,11 @@ async def get_project_overview(project_id: str, api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3040,9 +3204,11 @@ async def add_project_resources(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3085,9 +3251,11 @@ async def list_project_resources(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3126,9 +3294,11 @@ async def remove_project_resource(
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3155,9 +3325,11 @@ async def get_user_limits(api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3182,9 +3354,11 @@ async def check_health(api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 @mcp.tool()
@@ -3209,9 +3383,11 @@ async def get_version(api_key: str = "") -> str:
         )
         return json.dumps(result, indent=2)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        # Upstream 4xx/5xx (and local input-validation) failures must surface as a
+        # real MCP tool error (isError=True), not a silently-returned success string.
+        raise ToolError(str(e)) from e
     except Exception as e:
-        return f"Unexpected error: {str(e)}"
+        raise ToolError(f"Unexpected error: {e}") from e
 
 
 # Patch mcp.http_app to always inject ApiKeyASGIMiddleware, regardless of how the

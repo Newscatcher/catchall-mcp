@@ -20,7 +20,7 @@ class TestCheckHealth:
     async def test_no_api_key_still_works(self, mcp):
         result = await mcp.call_tool("check_health", {})
         text = call_result_text(result)
-        assert not text.startswith("Error:"), f"Unexpected error: {text}"
+        assert not result.isError, f"Unexpected error: {text}"
 
     async def test_explicit_empty_api_key(self, mcp):
         result = await mcp.call_tool("check_health", {"api_key": ""})
@@ -38,4 +38,4 @@ class TestGetVersion:
     async def test_no_api_key_still_works(self, mcp):
         result = await mcp.call_tool("get_version", {})
         text = call_result_text(result)
-        assert not text.startswith("Error:"), f"Unexpected error: {text}"
+        assert not result.isError, f"Unexpected error: {text}"
