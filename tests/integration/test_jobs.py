@@ -9,6 +9,14 @@ Or mark with the env var guard at the top of each test.
 
 Note: submit_query starts real processing jobs — tests use a small limit=10
 to minimize cost and use initialize_query for preview-only calls.
+
+Job reuse: submit_query is a paid/real call, so TestJobLifecycle submits a
+single job (via the class-scoped `submitted_job` fixture) and reuses its
+job_id across every test that only needs *some* valid job to check
+get_job_status / pull_results / pagination behavior. Only tests that verify
+submit_query's own parameter handling (validators/enrichments, lite mode,
+invalid mode) submit their own separate job, since those are exercising
+submit itself rather than downstream job operations.
 """
 
 from __future__ import annotations
@@ -90,26 +98,38 @@ class TestListUserJobs:
 
 @pytest.mark.asyncio
 class TestJobLifecycle:
-    async def test_submit_returns_job_id(self, mcp):
-        result = await mcp.call_tool(
-            "submit_query",
-            {"query": "AI chip manufacturers news", "limit": 10},
-        )
-        data = call_result_json(result)
+    # Cache for the one real job this class submits. `mcp` (conftest.py) is
+    # function-scoped — a fresh MCP session per test — so a class-scoped
+    # fixture can't depend on it (pytest raises ScopeMismatch). Manual
+    # caching on the class gets the same effect without fighting fixture
+    # scopes: the first test that needs a job submits it once via
+    # submit_query, every later test in the class reuses that same job_id.
+    _shared_job: dict | None = None
+
+    @pytest.fixture()
+    async def submitted_job(self, mcp):
+        """Return the one shared job for this class, submitting it on first
+        use. Reused by every test below that just needs *a* valid,
+        in-flight job_id — avoids spinning up a separate paid job per test
+        for behavior that doesn't depend on what the job actually is
+        (status shape, pull_results shape, pagination params)."""
+        if TestJobLifecycle._shared_job is None:
+            result = await mcp.call_tool(
+                "submit_query",
+                {"query": "AI chip manufacturers news", "limit": 10},
+            )
+            TestJobLifecycle._shared_job = call_result_json(result)
+        return TestJobLifecycle._shared_job
+
+    async def test_submit_returns_job_id(self, submitted_job):
+        data = submitted_job
         assert "job_id" in data, f"Expected job_id in response: {data}"
         assert isinstance(data["job_id"], str)
         assert len(data["job_id"]) > 0
 
-    async def test_get_job_status_for_submitted_job(self, mcp):
-        # Submit a job first
-        submit = await mcp.call_tool(
-            "submit_query",
-            {"query": "electric vehicle battery technology", "limit": 10},
-        )
-        submit_data = call_result_json(submit)
-        job_id = submit_data["job_id"]
+    async def test_get_job_status_for_submitted_job(self, mcp, submitted_job):
+        job_id = submitted_job["job_id"]
 
-        # Check status
         result = await mcp.call_tool("get_job_status", {"job_id": job_id})
         data = call_result_json(result)
         assert "status" in data, f"Expected 'status' in response: {data}"
@@ -118,12 +138,8 @@ class TestJobLifecycle:
             "enriching", "completed", "failed",
         }, f"Unknown status: {data['status']}"
 
-    async def test_pull_results_for_submitted_job(self, mcp):
-        submit = await mcp.call_tool(
-            "submit_query",
-            {"query": "renewable energy investments", "limit": 10},
-        )
-        job_id = call_result_json(submit)["job_id"]
+    async def test_pull_results_for_submitted_job(self, mcp, submitted_job):
+        job_id = submitted_job["job_id"]
 
         result = await mcp.call_tool("pull_results", {"job_id": job_id})
         data = call_result_json(result)
@@ -131,6 +147,15 @@ class TestJobLifecycle:
         assert "status" in data or "all_records" in data, (
             f"Unexpected pull_results response: {data}"
         )
+
+    async def test_pull_results_pagination_params(self, mcp, submitted_job):
+        job_id = submitted_job["job_id"]
+
+        result = await mcp.call_tool(
+            "pull_results", {"job_id": job_id, "page": 1, "page_size": 10}
+        )
+        data = call_result_json(result)
+        assert data is not None
 
     async def test_get_status_unknown_job_returns_error(self, mcp):
         """v1.8.0 regression check: a not-found job_id must surface as a real
@@ -145,6 +170,16 @@ class TestJobLifecycle:
             "pull_results", {"job_id": "00000000-0000-0000-0000-000000000000"}
         )
         assert_tool_error(result)
+
+    async def test_pull_results_invalid_page_returns_error(self, mcp):
+        result = await mcp.call_tool(
+            "pull_results", {"job_id": "any-id", "page": 0}
+        )
+        assert_tool_error(result)
+
+    # -- These submit their own job on purpose: they test submit_query's own
+    # -- parameter handling, not downstream job operations, so they can't
+    # -- share `submitted_job`.
 
     async def test_submit_with_validators_and_enrichments(self, mcp):
         result = await mcp.call_tool(
@@ -190,24 +225,6 @@ class TestJobLifecycle:
         )
         text = assert_tool_error(result)
         assert "mode" in text.lower()
-
-    async def test_pull_results_pagination_params(self, mcp):
-        submit = await mcp.call_tool(
-            "submit_query", {"query": "space exploration news", "limit": 10}
-        )
-        job_id = call_result_json(submit)["job_id"]
-
-        result = await mcp.call_tool(
-            "pull_results", {"job_id": job_id, "page": 1, "page_size": 10}
-        )
-        data = call_result_json(result)
-        assert data is not None
-
-    async def test_pull_results_invalid_page_returns_error(self, mcp):
-        result = await mcp.call_tool(
-            "pull_results", {"job_id": "any-id", "page": 0}
-        )
-        assert_tool_error(result)
 
 
 # ---------------------------------------------------------------------------
