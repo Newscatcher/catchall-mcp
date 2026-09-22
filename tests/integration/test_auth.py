@@ -38,7 +38,7 @@ async def test_no_auth_tools_succeed_without_key(mcp, tool_name, kwargs):
     result = await mcp.call_tool(tool_name, {**kwargs, "api_key": "INVALID_KEY_FOR_TEST"})
     text = call_result_text(result)
     # These endpoints don't validate the key — they should always succeed.
-    assert not result.isError, f"{tool_name} unexpectedly failed: {text}"
+    assert not result.is_error, f"{tool_name} unexpectedly failed: {text}"
 
 
 @pytest.mark.asyncio

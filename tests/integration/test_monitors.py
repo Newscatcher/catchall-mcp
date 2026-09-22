@@ -221,12 +221,12 @@ class TestMonitorLifecycle:
         # 4. Disable
         disable = await mcp.call_tool("disable_monitor", {"monitor_id": monitor_id})
         disable_text = call_result_text(disable)
-        assert not disable.isError, f"Disable failed: {disable_text}"
+        assert not disable.is_error, f"Disable failed: {disable_text}"
 
         # 5. Enable
         enable = await mcp.call_tool("enable_monitor", {"monitor_id": monitor_id})
         enable_text = call_result_text(enable)
-        assert not enable.isError, f"Enable failed: {enable_text}"
+        assert not enable.is_error, f"Enable failed: {enable_text}"
 
         # 6. Update per-run limit, schedule, and timezone (webhooks are now
         # assigned via webhook_ids)
