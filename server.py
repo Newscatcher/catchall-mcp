@@ -1328,11 +1328,13 @@ async def update_monitor(
     api_key: str = "",
     webhook_ids: list[str] | None = None,
     limit: int | None = None,
+    schedule: str = "",
+    timezone: str = "",
 ) -> str:
     """
-    Update a monitor's webhook assignments and per-run limit.
+    Update a monitor's schedule, timezone, webhook assignments, and per-run limit.
 
-    Note: schedule and reference_job_id cannot be modified through this endpoint.
+    Note: reference_job_id cannot be modified through this endpoint.
     Webhooks are centralized — pass webhook IDs (from `create_webhook`/`list_webhooks`).
 
     Args:
@@ -1341,6 +1343,13 @@ async def update_monitor(
         webhook_ids: Optional list of webhook IDs to assign to this monitor.
             Pass an empty list `[]` to clear all webhook assignments.
         limit: Optional updated maximum records per run (minimum 10).
+        schedule: Optional new natural-language schedule to replace the monitor's current
+            one (e.g. 'every day at 9 AM', 'every Monday at 6 PM EST'). Leave unset to keep
+            the current schedule. The scheduler picks up the new schedule on its next
+            reload and the old schedule stops firing.
+        timezone: Optional IANA timezone for the new schedule (e.g. 'America/New_York').
+            Defaults to UTC. Overridden if the schedule text itself contains a timezone.
+            Ignored if `schedule` is not set.
 
     Returns:
         JSON with monitor_id and status.
@@ -1352,6 +1361,10 @@ async def update_monitor(
         if limit is not None:
             validate_limit(limit)
             body["limit"] = limit
+        if schedule:
+            body["schedule"] = schedule
+        if timezone:
+            body["timezone"] = timezone
 
         result = await make_api_request(
             api_key=api_key,

@@ -244,7 +244,7 @@ claude mcp add --transport http catchall "https://YOUR-DEPLOYMENT.fastmcp.app/mc
 - Webhooks are centralized in v1.5.3: register them with `create_webhook`, then attach by ID via `create_monitor.webhook_ids` / `update_monitor.webhook_ids` (no inline webhook config).
 - Monitors are only supported for `base` jobs (not `lite`).
 - `enable_monitor` supports optional `backfill`.
-- `update_monitor` updates `webhook_ids` and/or run `limit` (pass `webhook_ids=[]` to clear assignments).
+- `update_monitor` updates `webhook_ids`, run `limit`, `schedule`, and/or `timezone` (pass `webhook_ids=[]` to clear assignments; `timezone` is ignored unless `schedule` is also set).
 - `list_monitors` supports pagination via `page` and `page_size` plus `search`, `ownership`, and `project_id` filters; it returns `total`, `page`, `page_size`, `total_pages`, `monitors`.
 
 ## Enrichment Output Notes
