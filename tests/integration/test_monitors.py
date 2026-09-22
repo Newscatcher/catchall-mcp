@@ -133,6 +133,19 @@ class TestMonitorWriteToolsWithFakeId:
         text = assert_tool_error(result)
         assert "limit" in text.lower()
 
+    async def test_update_monitor_schedule_and_timezone_unknown_returns_error(self, mcp):
+        # v1.9.0: update_monitor accepts schedule/timezone; a fake monitor_id
+        # must still surface as a real tool error, not a silent success.
+        result = await mcp.call_tool(
+            "update_monitor",
+            {
+                "monitor_id": self.FAKE_ID,
+                "schedule": "every day at 9 AM",
+                "timezone": "America/New_York",
+            },
+        )
+        assert_tool_error(result)
+
     async def test_delete_unknown_monitor_returns_error(self, mcp):
         result = await mcp.call_tool("delete_monitor", {"monitor_id": self.FAKE_ID})
         assert_tool_error(result)
@@ -215,12 +228,15 @@ class TestMonitorLifecycle:
         enable_text = call_result_text(enable)
         assert not enable.isError, f"Enable failed: {enable_text}"
 
-        # 6. Update per-run limit (webhooks are now assigned via webhook_ids)
+        # 6. Update per-run limit, schedule, and timezone (webhooks are now
+        # assigned via webhook_ids)
         update = await mcp.call_tool(
             "update_monitor",
             {
                 "monitor_id": monitor_id,
                 "limit": 15,
+                "schedule": "every day at 10 AM UTC",
+                "timezone": "UTC",
             },
         )
         update_data = call_result_json(update)

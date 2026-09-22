@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.9.0] — 2026-09-18
+
+### Fixed
+- **`update_monitor` couldn't update a monitor's schedule or timezone.** The CatchAll
+  API's `PATCH /catchAll/monitors/{monitor_id}` added optional `schedule` and `timezone`
+  fields to `UpdateMonitorRequestDto`, but the MCP tool's input schema still only accepted
+  `monitor_id`, `webhook_ids`, and `limit`, and its docstring explicitly (and now
+  incorrectly) said schedule could not be modified through this endpoint. `update_monitor`
+  now accepts optional `schedule` (natural-language string, e.g. `'every day at 9 AM'`)
+  and `timezone` (IANA string, e.g. `'America/New_York'`, ignored unless `schedule` is
+  also set) and forwards them in the PATCH body when provided, syncing the tool with the
+  CatchAll API 1.9.0 monitor-update contract. `reference_job_id` remains correctly
+  unmodifiable through this endpoint — that part of the docstring is unchanged.
+
+### Tests
+- Unit request-mapping tests for `update_monitor` with `schedule` only, `schedule` +
+  `timezone`, and `schedule` + `timezone` combined with `webhook_ids`/`limit` in
+  `tests/test_server.py`.
+- Live integration tests in `tests/integration/test_monitors.py`: a fake-monitor-id
+  `schedule`/`timezone` update surfaces a real tool error, and the opt-in full monitor
+  lifecycle test now also updates `schedule`/`timezone` alongside `limit`.
+
+---
+
 ## [1.8.0] — 2026-08-26
 
 ### Fixed
