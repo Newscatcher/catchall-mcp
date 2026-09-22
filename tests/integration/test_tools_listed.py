@@ -115,7 +115,7 @@ async def test_submit_query_has_required_params(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "submit_query"), None)
     assert tool is not None, "submit_query not found"
-    schema = tool.inputSchema
+    schema = tool.input_schema
     assert "query" in schema.get("properties", {}), "submit_query missing 'query' param"
     assert "query" in schema.get("required", []), "submit_query 'query' should be required"
 
@@ -126,7 +126,7 @@ async def test_validate_query_has_no_context_param(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "validate_query"), None)
     assert tool is not None, "validate_query not found"
-    props = tool.inputSchema.get("properties", {})
+    props = tool.input_schema.get("properties", {})
     assert "context" not in props, "validate_query still advertises the removed 'context' param"
     assert "query" in props
 
@@ -139,15 +139,15 @@ async def test_csv_upload_tool_schemas(mcp):
 
     create = tools.get("create_dataset_from_csv")
     assert create is not None, "create_dataset_from_csv not found"
-    props = create.inputSchema.get("properties", {})
-    required = create.inputSchema.get("required", [])
+    props = create.input_schema.get("properties", {})
+    required = create.input_schema.get("required", [])
     assert {"name", "file", "description", "project_id"} <= set(props)
     assert "name" in required and "file" in required
 
     append = tools.get("append_csv_to_dataset")
     assert append is not None, "append_csv_to_dataset not found"
-    props = append.inputSchema.get("properties", {})
-    required = append.inputSchema.get("required", [])
+    props = append.input_schema.get("properties", {})
+    required = append.input_schema.get("required", [])
     assert {"dataset_id", "file"} <= set(props)
     assert "dataset_id" in required and "file" in required
 
@@ -161,7 +161,7 @@ async def test_entity_tools_have_external_entity_id(mcp):
     for tool_name in ("create_entity", "update_entity"):
         tool = tools.get(tool_name)
         assert tool is not None, f"{tool_name} not found"
-        props = tool.inputSchema.get("properties", {})
+        props = tool.input_schema.get("properties", {})
         assert "external_entity_id" in props, (
             f"{tool_name} missing 'external_entity_id' parameter (required by 1.6.3)"
         )
@@ -174,8 +174,8 @@ async def test_trigger_webhook_tool_schema(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "trigger_webhook"), None)
     assert tool is not None, "trigger_webhook not found"
-    props = tool.inputSchema.get("properties", {})
-    required = tool.inputSchema.get("required", [])
+    props = tool.input_schema.get("properties", {})
+    required = tool.input_schema.get("required", [])
     assert {"webhook_id", "resource_type", "resource_id", "job_id"} <= set(props)
     assert {"webhook_id", "resource_type", "resource_id"} <= set(required)
     assert "job_id" not in required, "trigger_webhook 'job_id' must stay optional"
@@ -188,8 +188,8 @@ async def test_list_user_jobs_has_mode_filter(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "list_user_jobs"), None)
     assert tool is not None, "list_user_jobs not found"
-    props = tool.inputSchema.get("properties", {})
-    required = tool.inputSchema.get("required", [])
+    props = tool.input_schema.get("properties", {})
+    required = tool.input_schema.get("required", [])
     assert "mode" in props, "list_user_jobs missing 'mode' parameter"
     assert "mode" not in required, "list_user_jobs 'mode' must stay optional"
 
@@ -201,8 +201,8 @@ async def test_create_webhook_has_project_id(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "create_webhook"), None)
     assert tool is not None, "create_webhook not found"
-    props = tool.inputSchema.get("properties", {})
-    required = tool.inputSchema.get("required", [])
+    props = tool.input_schema.get("properties", {})
+    required = tool.input_schema.get("required", [])
     assert "project_id" in props, "create_webhook missing 'project_id' parameter"
     assert "project_id" not in required, "create_webhook 'project_id' must stay optional"
 
@@ -215,8 +215,8 @@ async def test_get_webhook_history_supports_webhook_id_mode(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "get_webhook_history"), None)
     assert tool is not None, "get_webhook_history not found"
-    props = tool.inputSchema.get("properties", {})
-    required = tool.inputSchema.get("required", [])
+    props = tool.input_schema.get("properties", {})
+    required = tool.input_schema.get("required", [])
     assert {"webhook_id", "resource_type", "resource_id"} <= set(props)
     for param in ("webhook_id", "resource_type", "resource_id"):
         assert param not in required, (
@@ -260,8 +260,8 @@ async def test_list_webhooks_and_list_entities_have_project_id_filter(mcp):
     for tool_name in ("list_webhooks", "list_entities"):
         tool = tools.get(tool_name)
         assert tool is not None, f"{tool_name} not found"
-        props = tool.inputSchema.get("properties", {})
-        required = tool.inputSchema.get("required", [])
+        props = tool.input_schema.get("properties", {})
+        required = tool.input_schema.get("required", [])
         assert "project_id" in props, f"{tool_name} missing 'project_id' parameter"
         assert "project_id" not in required, f"{tool_name} 'project_id' must stay optional"
 
@@ -273,8 +273,8 @@ async def test_list_source_groups_tool_schema(mcp):
     result = await mcp.list_tools()
     tool = next((t for t in result.tools if t.name == "list_source_groups"), None)
     assert tool is not None, "list_source_groups not found"
-    props = tool.inputSchema.get("properties", {})
-    required = tool.inputSchema.get("required", [])
+    props = tool.input_schema.get("properties", {})
+    required = tool.input_schema.get("required", [])
     assert {"page", "page_size"} <= set(props)
     assert not ({"page", "page_size"} & set(required)), (
         "list_source_groups page/page_size must stay optional"
@@ -304,7 +304,7 @@ async def test_error_propagation_not_found_job_surfaces_as_tool_error(mcp):
         "get_job_status", {"job_id": "00000000-0000-0000-0000-000000000000"}
     )
     text = call_result_text(result)
-    assert result.isError, (
+    assert result.is_error, (
         f"Expected an MCP tool error for a not-found job_id, got a success result: {text}"
     )
     assert text.strip() not in ("{}", ""), f"Error must carry a real message, got: {text!r}"
@@ -320,7 +320,7 @@ async def test_error_propagation_invalid_project_filter_surfaces_as_tool_error(m
         {"project_id": "00000000-0000-0000-0000-000000000000"},
     )
     text = call_result_text(result)
-    assert result.isError, (
+    assert result.is_error, (
         f"Expected an MCP tool error for an invalid project_id filter, got a success result: {text}"
     )
 
@@ -333,14 +333,14 @@ async def test_csv_download_tool_schemas(mcp):
 
     job_csv = tools.get("pull_job_csv")
     assert job_csv is not None, "pull_job_csv not found"
-    props = job_csv.inputSchema.get("properties", {})
-    required = job_csv.inputSchema.get("required", [])
+    props = job_csv.input_schema.get("properties", {})
+    required = job_csv.input_schema.get("required", [])
     assert "job_id" in props, "pull_job_csv missing 'job_id'"
     assert "job_id" in required, "pull_job_csv 'job_id' should be required"
 
     mon_csv = tools.get("pull_monitor_csv")
     assert mon_csv is not None, "pull_monitor_csv not found"
-    props = mon_csv.inputSchema.get("properties", {})
-    required = mon_csv.inputSchema.get("required", [])
+    props = mon_csv.input_schema.get("properties", {})
+    required = mon_csv.input_schema.get("required", [])
     assert "monitor_id" in props, "pull_monitor_csv missing 'monitor_id'"
     assert "monitor_id" in required, "pull_monitor_csv 'monitor_id' should be required"
