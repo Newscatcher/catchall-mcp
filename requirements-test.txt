@@ -2,5 +2,5 @@ fastmcp==4.0.5
 httpx==0.28.1
 pytest==9.0.3
 pytest-asyncio==1.4.0
-anyio==4.13.0
+anyio==4.14.2
 mcp==2.2.0
