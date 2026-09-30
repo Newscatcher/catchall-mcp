@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.10.0] — 2026-09-30
+
+### Verified — no MCP changes required
+- Checked this release against the CatchAll API's public changelog and OpenAPI spec
+  (`info.version: "1.10.0"`). 1.10.0 ships multi-turn search (band iteration) and
+  per-company clustering for Company Monitors, but the changelog states explicitly:
+  *"no request or response schema changes"* — confirmed against the live spec for
+  `POST /catchAll/submit`, `GET /catchAll/status/{job_id}`, `GET /catchAll/pull/{job_id}`,
+  and `GET /catchAll/jobs/user`. No new fields (e.g. no `job_info.turn`) reached the
+  public API surface in this release. No tool changes needed; existing jobs and
+  monitors pick up the improvements automatically.
+- Also verified **1.8.1** and **1.9.0** the same way — both are "quality release, no
+  request or response changes" per the public changelog, so nothing was missed between
+  the last dated CHANGELOG entry (1.9.0, below) and 1.10.0.
+
+---
+
 ## [1.9.0] — 2026-09-18
 
 ### Fixed
