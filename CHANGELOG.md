@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.10.3] — 2026-10-27
+
+### Added
+- `submit_query` gains an optional `source_groups` parameter: a list of source group
+  slugs (max 20 per job) forwarded as `source_groups` in the `POST /catchAll/submit`
+  body to scope fetching to their domain allowlists. Omitted when empty. More than 20
+  slugs, or non-string/empty slugs, fail early with a tool error.
+- `validate_source_groups` in `validators.py`.
+- Unit tests for forwarding, omission, the 20-slug limit, and the early validation error.
+
+### Changed
+- README: Source Groups section now documents `source_groups` on `submit_query`.
+
+---
+
 ## [1.10.0] — 2026-09-30
 
 ### Verified — no MCP changes required

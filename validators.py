@@ -187,6 +187,20 @@ def validate_mode(mode: str) -> str:
     return mode
 
 
+MAX_SOURCE_GROUPS = 20
+
+
+def validate_source_groups(source_groups: list[str]) -> list[str]:
+    """Validate submit_query source_groups: a list of slugs, max 20 per job."""
+    if not isinstance(source_groups, list) or not all(
+        isinstance(s, str) and s.strip() for s in source_groups
+    ):
+        raise ValueError("source_groups must be a list of non-empty slug strings.")
+    if len(source_groups) > MAX_SOURCE_GROUPS:
+        raise ValueError(f"source_groups accepts at most {MAX_SOURCE_GROUPS} slugs per job.")
+    return source_groups
+
+
 def validate_http_method(method: str) -> str:
     """Validate and normalize a webhook delivery HTTP method."""
     normalized = method.upper()
