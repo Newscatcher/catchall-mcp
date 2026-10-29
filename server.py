@@ -48,6 +48,7 @@ from validators import (
     validate_new_limit,
     validate_page_params,
     validate_sort,
+    validate_source_groups,
     validate_validator_definitions,
     validate_webhook_auth,
 )
@@ -460,6 +461,7 @@ async def submit_query(
     ed_score_min: int | None = None,
     ed_association_type: str = "",
     fetch_all_watchlist_news: bool = False,
+    source_groups: list[str] | None = None,
 ) -> str:
     """
     Create a new CatchAll processing job from a natural-language query.
@@ -543,6 +545,10 @@ async def submit_query(
         fetch_all_watchlist_news: When `True`, retrieves **all** news for connected watchlist
             entities without applying topic filtering from `query`. Requires
             `connected_dataset_ids` to be set. Default: `False`.
+        source_groups: Optional list of source group slugs (max 20 per job) that scope fetching
+            to their domain allowlists. Use `list_source_groups` to discover available slugs.
+            The attached groups (slug, name, description) are echoed back as `source_groups`
+            in `get_job_status` / `pull_results`.
 
     Returns:
         JSON string with `{"job_id":"<uuid>"}`.
@@ -559,8 +565,12 @@ async def submit_query(
         normalized_enrichments = validate_enrichment_definitions(parsed_enrichments)
         if mode:
             validate_mode(mode)
+        if source_groups:
+            validate_source_groups(source_groups)
 
         body: dict[str, Any] = {"query": query}
+        if source_groups:
+            body["source_groups"] = source_groups
         if context:
             body["context"] = context
         if limit is not None:
