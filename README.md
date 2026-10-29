@@ -158,10 +158,10 @@ Prefer to run the server yourself (locally or self-hosted)? See [Running](#runni
 
 > **Source groups (v1.8.0):** named, reusable domain allowlists (public groups plus any
 > organization-visibility groups your organization can access). `list_source_groups`
-> returns each group's `slug`, `name`, and `description`. The direct API's `POST /catchAll/submit`
-> now accepts a `source_groups` field of slugs to scope fetching to a domain allowlist;
-> `submit_query` does not yet expose this parameter — use the direct API for that until
-> a future release adds it here.
+> returns each group's `slug`, `name`, and `description`. `submit_query` accepts an optional
+> `source_groups` list of slugs (max 20 per job) that scopes fetching to those domain
+> allowlists. The attached groups are echoed back as `source_groups` in the job status and
+> results.
 
 ### User & Meta
 

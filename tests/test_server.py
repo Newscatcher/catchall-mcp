@@ -1036,6 +1036,35 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
         called = mock_api.await_args.kwargs
         self.assertNotIn("mode", called["json_data"])
 
+    async def test_submit_query_source_groups_forwarded(self) -> None:
+        with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"job_id": "job-5"}
+            await _unwrap(server.submit_query)(query="test", source_groups=["a", "b"])
+        self.assertEqual(mock_api.await_args.kwargs["json_data"]["source_groups"], ["a", "b"])
+
+    async def test_submit_query_source_groups_omitted_when_empty(self) -> None:
+        with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"job_id": "job-6"}
+            await _unwrap(server.submit_query)(query="test")
+        self.assertNotIn("source_groups", mock_api.await_args.kwargs["json_data"])
+
+    async def test_submit_query_source_groups_max_20(self) -> None:
+        with patch("server.make_api_request", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"job_id": "job-7"}
+            await _unwrap(server.submit_query)(
+                query="test", source_groups=[f"g{i}" for i in range(20)]
+            )
+            self.assertEqual(len(mock_api.await_args.kwargs["json_data"]["source_groups"]), 20)
+            mock_api.reset_mock()
+            with self.assertRaises(ToolError) as ctx:
+                await _unwrap(server.submit_query)(
+                    query="test", source_groups=[f"g{i}" for i in range(21)]
+                )
+            self.assertEqual(
+                str(ctx.exception), "source_groups accepts at most 20 slugs per job."
+            )
+            mock_api.assert_not_awaited()
+
     async def test_tool_validations_fail_early(self) -> None:
         invalid_calls = [
             (server.pull_results, {"job_id": "job-1", "page": 0}, "page must be >= 1."),
@@ -1166,6 +1195,11 @@ class ToolBehaviorTests(unittest.IsolatedAsyncioTestCase):
                 server.submit_query,
                 {"query": "acquisitions", "mode": "fast"},
                 "mode must be 'lite' or 'base'.",
+            ),
+            (
+                server.submit_query,
+                {"query": "acquisitions", "source_groups": [f"g{i}" for i in range(21)]},
+                "source_groups accepts at most 20 slugs per job.",
             ),
         ]
 

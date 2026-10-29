@@ -6,7 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [Unreleased] — 2026-10-29
+## [1.10.3] — 2026-10-27
+
+### Added
+- `submit_query` gains an optional `source_groups` parameter: a list of source group
+  slugs (max 20 per job) forwarded as `source_groups` in the `POST /catchAll/submit`
+  body to scope fetching to their domain allowlists. Omitted when empty. More than 20
+  slugs, or non-string/empty slugs, fail early with a tool error.
+- `validate_source_groups` in `validators.py`.
+- Unit tests for forwarding, omission, the 20-slug limit, and the early validation error.
+
+### Changed
+- README: Source Groups section now documents `source_groups` on `submit_query`.
 
 ### Security
 - Bumped `fastmcp` 4.0.5 → 4.1.3 in `requirements.txt` and `requirements-test.txt` to
@@ -17,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - 4.1.3 rather than the latest 4.1.4 because 4.1.4 requires `mcp>=2.3.0`, while
     `requirements-test.txt` pins `mcp==2.2.0`; 4.1.3 accepts `mcp>=2.2.0`, so the `mcp`
     requirements stay untouched.
+
 
 ---
 
