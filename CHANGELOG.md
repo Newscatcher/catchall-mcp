@@ -19,6 +19,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - README: Source Groups section now documents `source_groups` on `submit_query`.
 
+### Security
+- Bumped `fastmcp` 4.0.5 → 4.1.3 in `requirements.txt` and `requirements-test.txt` to
+  resolve Dependabot alerts #9–#12 (both advisories affect `>=4.0.0, <4.1.2`):
+  - Post-transform component authorization was skipped on direct calls.
+  - MCP client wrappers built M2M OAuth providers without issuer binding, letting the
+    client secret be redirected to an attacker-advertised authorization server.
+  - 4.1.3 rather than the latest 4.1.4 because 4.1.4 requires `mcp>=2.3.0`, while
+    `requirements-test.txt` pins `mcp==2.2.0`; 4.1.3 accepts `mcp>=2.2.0`, so the `mcp`
+    requirements stay untouched.
+
+
 ---
 
 ## [1.10.0] — 2026-09-30
